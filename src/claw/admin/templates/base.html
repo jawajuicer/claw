@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}The Claw{% endblock %} — Admin</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script src="https://unpkg.com/htmx-ext-sse@2.3.0/sse.js"></script>
+</head>
+<body>
+    <nav class="container-fluid">
+        <ul>
+            <li><strong class="brand">THE CLAW</strong></li>
+        </ul>
+        <ul>
+            <li><a href="/"{% if request.url.path == "/" %} aria-current="page"{% endif %}>Chat</a></li>
+            <li><a href="/dashboard"{% if request.url.path == "/dashboard" %} aria-current="page"{% endif %}>Dashboard</a></li>
+            <li><a href="/settings"{% if request.url.path == "/settings" %} aria-current="page"{% endif %}>Settings</a></li>
+            <li><a href="/logs"{% if request.url.path == "/logs" %} aria-current="page"{% endif %}>Logs</a></li>
+        </ul>
+    </nav>
+
+    <main class="{% block main_class %}container{% endblock %}">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer>
+        <p>The Claw v0.1.0 — Local-first voice AI agent</p>
+    </footer>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

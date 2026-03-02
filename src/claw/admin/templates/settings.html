@@ -1,0 +1,798 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+
+{% block content %}
+<h2>Settings</h2>
+
+<form id="settings-form">
+
+    {# ── Voice & Microphone ──────────────────────────────────────────── #}
+    <div class="settings-card">
+        <div class="settings-card-header">
+            <h3>Voice &amp; Microphone</h3>
+        </div>
+        <div class="settings-grid">
+            <div>
+                <label for="audio.device_index">Microphone</label>
+                <input type="text" name="audio.device_index" id="audio.device_index"
+                       value="{{ settings.audio.device_index if settings.audio.device_index is not none else '' }}"
+                       placeholder="System default">
+                <span class="field-desc">Which microphone to use. Leave blank for system default.</span>
+            </div>
+            <div>
+                <label for="audio.silence_duration">Silence Timeout</label>
+                <input type="number" name="audio.silence_duration" id="audio.silence_duration"
+                       value="{{ settings.audio.silence_duration }}" step="any">
+                <span class="field-desc">Seconds of silence before your message is processed.</span>
+            </div>
+            <div>
+                <label for="audio.max_record_seconds">Max Recording Time</label>
+                <input type="number" name="audio.max_record_seconds" id="audio.max_record_seconds"
+                       value="{{ settings.audio.max_record_seconds }}" step="any">
+                <span class="field-desc">Maximum seconds for a single voice message.</span>
+            </div>
+        </div>
+        <button type="button" class="advanced-toggle" onclick="toggleAdvanced(this, 'audio-adv')">Show advanced</button>
+        <div class="advanced-fields" id="audio-adv">
+            <div>
+                <label for="audio.sample_rate">Sample Rate</label>
+                <input type="number" name="audio.sample_rate" id="audio.sample_rate"
+                       value="{{ settings.audio.sample_rate }}">
+                <span class="field-desc">Audio quality in Hz. 16000 is standard for voice.</span>
+            </div>
+            <div>
+                <label for="audio.channels">Channels</label>
+                <input type="number" name="audio.channels" id="audio.channels"
+                       value="{{ settings.audio.channels }}">
+                <span class="field-desc">1 = mono (recommended), 2 = stereo.</span>
+            </div>
+            <div>
+                <label for="audio.block_size">Block Size</label>
+                <input type="number" name="audio.block_size" id="audio.block_size"
+                       value="{{ settings.audio.block_size }}">
+                <span class="field-desc">Audio processing chunk size in samples.</span>
+            </div>
+            <div>
+                <label for="audio.silence_threshold">Silence Sensitivity</label>
+                <input type="number" name="audio.silence_threshold" id="audio.silence_threshold"
+                       value="{{ settings.audio.silence_threshold }}" step="any">
+                <span class="field-desc">Volume level that counts as silence. Lower = more sensitive.</span>
+            </div>
+        </div>
+    </div>
+
+    {# ── Wake Word ───────────────────────────────────────────────────── #}
+    <div class="settings-card">
+        <div class="settings-card-header">
+            <h3>Wake Word</h3>
+            <span class="hot-reload-badge">hot-reload</span>
+        </div>
+        <div class="settings-grid">
+            <div class="field-full">
+                <label>Active Wake Words</label>
+                <div id="wake-models-list" class="checkbox-list">
+                    <span class="field-desc">Loading available models...</span>
+                </div>
+                <span class="field-desc">Select which wake words The Claw responds to. Multiple can be active at once.</span>
+            </div>
+            <div>
+                <label for="wake.default_threshold">Default Sensitivity</label>
+                <input type="number" name="wake.default_threshold" id="wake.default_threshold"
+                       value="{{ settings.wake.default_threshold }}" step="0.05" min="0" max="1">
+                <span class="field-desc">How easily wake words trigger. Lower = more sensitive but more false positives.</span>
+            </div>
+        </div>
+        <button type="button" class="advanced-toggle" onclick="toggleAdvanced(this, 'wake-adv')">Show advanced</button>
+        <div class="advanced-fields" id="wake-adv">
+            <div>
+                <label for="wake.custom_models_dir">Custom Models Folder</label>
+                <input type="text" name="wake.custom_models_dir" id="wake.custom_models_dir"
+                       value="{{ settings.wake.custom_models_dir }}">
+                <span class="field-desc">Directory for custom .onnx wake word models.</span>
+            </div>
+            <div>
+                <label for="wake.inference_framework">Engine</label>
+                <input type="text" name="wake.inference_framework" id="wake.inference_framework"
+                       value="{{ settings.wake.inference_framework }}">
+                <span class="field-desc">AI framework for wake word detection.</span>
+            </div>
+            <div class="field-full" id="wake-thresholds-section" style="display:none">
+                <label>Per-Model Thresholds</label>
+                <div id="wake-thresholds-list"></div>
+                <span class="field-desc">Override the default sensitivity for specific models.</span>
+            </div>
+        </div>
+    </div>
+
+    {# ── Speech Recognition ──────────────────────────────────────────── #}
+    <div class="settings-card">
+        <div class="settings-card-header">
+            <h3>Speech Recognition</h3>
+            <span class="hot-reload-badge">hot-reload</span>
+        </div>
+        <div class="settings-grid">
+            <div>
+                <label for="whisper.model_size">Model Size</label>
+                <input type="text" name="whisper.model_size" id="whisper.model_size"
+                       value="{{ settings.whisper.model_size }}">
+                <span class="field-desc">Larger models are more accurate but slower. 'base' is a good balance.</span>
+            </div>
+            <div>
+                <label for="whisper.language">Language</label>
+                <input type="text" name="whisper.language" id="whisper.language"
+                       value="{{ settings.whisper.language }}">
+                <span class="field-desc">Language code for speech recognition (e.g., 'en' for English).</span>
+            </div>
+        </div>
+        <button type="button" class="advanced-toggle" onclick="toggleAdvanced(this, 'whisper-adv')">Show advanced</button>
+        <div class="advanced-fields" id="whisper-adv">
+            <div>
+                <label for="whisper.compute_type">Precision</label>
+                <input type="text" name="whisper.compute_type" id="whisper.compute_type"
+                       value="{{ settings.whisper.compute_type }}">
+                <span class="field-desc">Math precision. 'int8' is fastest, 'float16' most accurate.</span>
+            </div>
+            <div>
+                <label for="whisper.beam_size">Beam Size</label>
+                <input type="number" name="whisper.beam_size" id="whisper.beam_size"
+                       value="{{ settings.whisper.beam_size }}">
+                <span class="field-desc">Search width for transcription. Higher = more accurate but slower.</span>
+            </div>
+        </div>
+    </div>
+
+    {# ── Text to Speech ──────────────────────────────────────────────── #}
+    <div class="settings-card">
+        <div class="settings-card-header">
+            <h3>Text to Speech</h3>
+            <span class="hot-reload-badge">hot-reload</span>
+        </div>
+        <div class="settings-grid">
+            <div class="checkbox-field">
+                <label for="tts.enabled">
+                    <input type="checkbox" name="tts.enabled" id="tts.enabled"
+                           {% if settings.tts.enabled %}checked{% endif %}>
+                    Enable TTS
+                </label>
+                <span class="field-desc">Allow The Claw to speak responses aloud.</span>
+            </div>
+            <div>
+                <label for="tts.engine">Engine</label>
+                <select name="tts.engine" id="tts.engine">
+                    <option value="piper" {% if settings.tts.engine == 'piper' %}selected{% endif %}>Piper (local, fast)</option>
+                    <option value="fish_speech" {% if settings.tts.engine == 'fish_speech' %}selected{% endif %}>Fish Speech (voice cloning)</option>
+                </select>
+                <span class="field-desc">Piper is fast and runs locally. Fish Speech supports voice cloning via a separate server.</span>
+            </div>
+            <div>
+                <label for="tts.speed">Speed</label>
+                <div style="display:flex; align-items:center; gap:0.5rem;">
+                    <input type="range" name="tts.speed" id="tts.speed"
+                           value="{{ settings.tts.speed }}" min="0.5" max="2.0" step="0.1"
+                           oninput="document.getElementById('tts-speed-val').textContent=this.value+'x'"
+                           style="flex:1">
+                    <span id="tts-speed-val" style="min-width:2.5em; text-align:right; font-size:0.85rem;">{{ settings.tts.speed }}x</span>
+                </div>
+                <span class="field-desc">Speech speed. 0.5x = slow, 1.0x = normal, 2.0x = fast.</span>
+            </div>
+            <div class="checkbox-field">
+                <label for="tts.voice_loop_enabled">
+                    <input type="checkbox" name="tts.voice_loop_enabled" id="tts.voice_loop_enabled"
+                           {% if settings.tts.voice_loop_enabled %}checked{% endif %}>
+                    Voice Loop Audio
+                </label>
+                <span class="field-desc">Speak responses through the physical speaker in voice/CLI mode.</span>
+            </div>
+            <div class="checkbox-field">
+                <label for="tts.admin_chat_enabled">
+                    <input type="checkbox" name="tts.admin_chat_enabled" id="tts.admin_chat_enabled"
+                           {% if settings.tts.admin_chat_enabled %}checked{% endif %}>
+                    Admin Chat Audio
+                </label>
+                <span class="field-desc">Show play buttons on chat responses in the admin panel.</span>
+            </div>
+            <div class="checkbox-field">
+                <label for="tts.admin_chat_autoplay">
+                    <input type="checkbox" name="tts.admin_chat_autoplay" id="tts.admin_chat_autoplay"
+                           {% if settings.tts.admin_chat_autoplay %}checked{% endif %}>
+                    Auto-Play in Chat
+                </label>
+                <span class="field-desc">Automatically speak every assistant response in the admin chat (not just via play button).</span>
+            </div>
+        </div>
+        <button type="button" class="advanced-toggle" onclick="toggleAdvanced(this, 'tts-adv')">Show advanced</button>
+        <div class="advanced-fields" id="tts-adv">
+            <div>
+                <label for="tts.piper_model">Piper Model Path</label>
+                <input type="text" name="tts.piper_model" id="tts.piper_model"
+                       value="{{ settings.tts.piper_model }}">
+                <span class="field-desc">Path to the Piper ONNX voice model file.</span>
+            </div>
+            <div>
+                <label for="tts.piper_speaker_id">Piper Speaker ID</label>
+                <input type="text" name="tts.piper_speaker_id" id="tts.piper_speaker_id"
+                       value="{{ settings.tts.piper_speaker_id if settings.tts.piper_speaker_id is not none else '' }}"
+                       placeholder="Default">
+                <span class="field-desc">Speaker ID for multi-speaker Piper models. Leave blank for default.</span>
+            </div>
+            <div>
+                <label for="tts.fish_speech_url">Fish Speech Server URL</label>
+                <input type="text" name="tts.fish_speech_url" id="tts.fish_speech_url"
+                       value="{{ settings.tts.fish_speech_url }}">
+                <span class="field-desc">URL of the Fish Speech HTTP server.</span>
+            </div>
+            <div>
+                <label for="tts.fish_speech_reference_audio">Fish Speech Reference Audio</label>
+                <input type="text" name="tts.fish_speech_reference_audio" id="tts.fish_speech_reference_audio"
+                       value="{{ settings.tts.fish_speech_reference_audio }}">
+                <span class="field-desc">Path to a reference audio file for voice cloning.</span>
+            </div>
+            <div>
+                <label for="tts.fish_speech_reference_text">Fish Speech Reference Text</label>
+                <input type="text" name="tts.fish_speech_reference_text" id="tts.fish_speech_reference_text"
+                       value="{{ settings.tts.fish_speech_reference_text }}">
+                <span class="field-desc">Transcript of the reference audio (improves cloning quality).</span>
+            </div>
+        </div>
+    </div>
+
+    {# ── AI Model ────────────────────────────────────────────────────── #}
+    <div class="settings-card">
+        <div class="settings-card-header">
+            <h3>AI Model</h3>
+            <span class="hot-reload-badge">hot-reload</span>
+        </div>
+        <div class="settings-grid">
+            <div>
+                <label for="llm.model">Model</label>
+                <input type="text" name="llm.model" id="llm.model"
+                       value="{{ settings.llm.model }}">
+                <span class="field-desc">Which AI model to use (e.g., qwen3:14b).</span>
+            </div>
+            <div>
+                <label for="llm.temperature">Creativity</label>
+                <input type="number" name="llm.temperature" id="llm.temperature"
+                       value="{{ settings.llm.temperature }}" step="any">
+                <span class="field-desc">How creative responses are. 0 = very focused, 1 = very creative.</span>
+            </div>
+            <div>
+                <label for="llm.max_tokens">Max Response Length</label>
+                <input type="number" name="llm.max_tokens" id="llm.max_tokens"
+                       value="{{ settings.llm.max_tokens }}">
+                <span class="field-desc">Maximum length of each response in tokens (~750 words per 1024).</span>
+            </div>
+            <div>
+                <label for="llm.context_window">Context Window</label>
+                <input type="number" name="llm.context_window" id="llm.context_window"
+                       value="{{ settings.llm.context_window }}">
+                <span class="field-desc">How much conversation the AI can remember at once (in tokens).</span>
+            </div>
+            <div class="field-full">
+                <label for="llm.system_prompt">Personality</label>
+                <textarea name="llm.system_prompt" id="llm.system_prompt" rows="4">{{ settings.llm.system_prompt }}</textarea>
+                <span class="field-desc">Instructions that define how The Claw behaves.</span>
+            </div>
+        </div>
+        <button type="button" class="advanced-toggle" onclick="toggleAdvanced(this, 'llm-adv')">Show advanced</button>
+        <div class="advanced-fields" id="llm-adv">
+            <div>
+                <label for="llm.base_url">Server URL</label>
+                <input type="text" name="llm.base_url" id="llm.base_url"
+                       value="{{ settings.llm.base_url }}">
+                <span class="field-desc">Where the AI model server is running.</span>
+            </div>
+            <div>
+                <label for="llm.api_key">API Key</label>
+                <input type="text" name="llm.api_key" id="llm.api_key"
+                       value="{{ settings.llm.api_key }}">
+                <span class="field-desc">Authentication key for the AI server.</span>
+            </div>
+            <div>
+                <label for="llm.max_iterations">Max Tool Rounds</label>
+                <input type="number" name="llm.max_iterations" id="llm.max_iterations"
+                       value="{{ settings.llm.max_iterations }}">
+                <span class="field-desc">How many times the AI can call tools in a single response.</span>
+            </div>
+        </div>
+    </div>
+
+    {# ── Memory ──────────────────────────────────────────────────────── #}
+    <div class="settings-card">
+        <div class="settings-card-header">
+            <h3>Memory</h3>
+        </div>
+        <div class="settings-grid">
+            <div>
+                <label for="memory.max_results">Memory Recall</label>
+                <input type="number" name="memory.max_results" id="memory.max_results"
+                       value="{{ settings.memory.max_results }}">
+                <span class="field-desc">How many memories to search when answering questions.</span>
+            </div>
+        </div>
+        <button type="button" class="advanced-toggle" onclick="toggleAdvanced(this, 'memory-adv')">Show advanced</button>
+        <div class="advanced-fields" id="memory-adv">
+            <div>
+                <label for="memory.chroma_path">Storage Path</label>
+                <input type="text" name="memory.chroma_path" id="memory.chroma_path"
+                       value="{{ settings.memory.chroma_path }}">
+                <span class="field-desc">Where the memory database is stored on disk.</span>
+            </div>
+            <div>
+                <label for="memory.embedding_model">Embedding Model</label>
+                <input type="text" name="memory.embedding_model" id="memory.embedding_model"
+                       value="{{ settings.memory.embedding_model }}">
+                <span class="field-desc">AI model used to understand and search memories.</span>
+            </div>
+            <div>
+                <label for="memory.conversation_collection">Conversations DB</label>
+                <input type="text" name="memory.conversation_collection" id="memory.conversation_collection"
+                       value="{{ settings.memory.conversation_collection }}">
+                <span class="field-desc">Database collection name for conversations.</span>
+            </div>
+            <div>
+                <label for="memory.facts_collection">Facts DB</label>
+                <input type="text" name="memory.facts_collection" id="memory.facts_collection"
+                       value="{{ settings.memory.facts_collection }}">
+                <span class="field-desc">Database collection name for extracted facts.</span>
+            </div>
+            <div>
+                <label for="memory.categories_collection">Categories DB</label>
+                <input type="text" name="memory.categories_collection" id="memory.categories_collection"
+                       value="{{ settings.memory.categories_collection }}">
+                <span class="field-desc">Database collection name for categories.</span>
+            </div>
+        </div>
+    </div>
+
+    {# ── Tools ───────────────────────────────────────────────────────── #}
+    <div class="settings-card">
+        <div class="settings-card-header">
+            <h3>Tools</h3>
+            <span class="hot-reload-badge">hot-reload</span>
+        </div>
+        <div class="settings-grid">
+            <div class="field-full">
+                <label for="mcp.enabled_servers">Enabled Tools</label>
+                <input type="text" name="mcp.enabled_servers" id="mcp.enabled_servers"
+                       value="{{ settings.mcp.enabled_servers | join(', ') if settings.mcp.enabled_servers is sequence and settings.mcp.enabled_servers is not string else settings.mcp.enabled_servers }}"
+                       placeholder="comma-separated">
+                <span class="field-desc">Which tools The Claw can use (comma-separated).</span>
+            </div>
+        </div>
+        <button type="button" class="advanced-toggle" onclick="toggleAdvanced(this, 'mcp-adv')">Show advanced</button>
+        <div class="advanced-fields" id="mcp-adv">
+            <div>
+                <label for="mcp.tools_dir">Tools Folder</label>
+                <input type="text" name="mcp.tools_dir" id="mcp.tools_dir"
+                       value="{{ settings.mcp.tools_dir }}">
+                <span class="field-desc">Directory containing tool server scripts.</span>
+            </div>
+            <div>
+                <label for="mcp.startup_timeout">Startup Timeout</label>
+                <input type="number" name="mcp.startup_timeout" id="mcp.startup_timeout"
+                       value="{{ settings.mcp.startup_timeout }}" step="any">
+                <span class="field-desc">Seconds to wait for tools to initialize.</span>
+            </div>
+        </div>
+    </div>
+
+    {# ── YouTube Music ──────────────────────────────────────────────── #}
+    <div class="settings-card">
+        <div class="settings-card-header">
+            <h3>YouTube Music</h3>
+        </div>
+        <div class="settings-grid">
+            <div class="checkbox-field">
+                <label for="youtube_music.enabled">
+                    <input type="checkbox" name="youtube_music.enabled" id="youtube_music.enabled"
+                           {% if settings.youtube_music.enabled %}checked{% endif %}>
+                    Enable YouTube Music
+                </label>
+                <span class="field-desc">Turn on YouTube Music playback. Requires auth setup: <code>python mcp_tools/youtube_music/setup_auth.py</code></span>
+            </div>
+            <div class="checkbox-field">
+                <label for="youtube_music.auto_radio">
+                    <input type="checkbox" name="youtube_music.auto_radio" id="youtube_music.auto_radio"
+                           {% if settings.youtube_music.auto_radio %}checked{% endif %}>
+                    Auto-Play Radio
+                </label>
+                <span class="field-desc">Automatically queue similar songs when a track finishes.</span>
+            </div>
+            <div>
+                <label for="youtube_music.default_volume">Default Volume</label>
+                <input type="number" name="youtube_music.default_volume" id="youtube_music.default_volume"
+                       value="{{ settings.youtube_music.default_volume }}" min="0" max="100">
+                <span class="field-desc">Playback volume level (0-100).</span>
+            </div>
+        </div>
+        <button type="button" class="advanced-toggle" onclick="toggleAdvanced(this, 'ytmusic-adv')">Show advanced</button>
+        <div class="advanced-fields" id="ytmusic-adv">
+            <div>
+                <label for="youtube_music.max_search_results">Search Results</label>
+                <input type="number" name="youtube_music.max_search_results" id="youtube_music.max_search_results"
+                       value="{{ settings.youtube_music.max_search_results }}">
+                <span class="field-desc">How many results to show when searching.</span>
+            </div>
+            <div>
+                <label for="youtube_music.auth_file">Auth File</label>
+                <input type="text" name="youtube_music.auth_file" id="youtube_music.auth_file"
+                       value="{{ settings.youtube_music.auth_file }}">
+                <span class="field-desc">Path to YouTube Music authentication file.</span>
+            </div>
+            <div>
+                <label for="youtube_music.history_file">History File</label>
+                <input type="text" name="youtube_music.history_file" id="youtube_music.history_file"
+                       value="{{ settings.youtube_music.history_file }}">
+                <span class="field-desc">Path to listen history storage.</span>
+            </div>
+            <div>
+                <label for="youtube_music.max_history">Max History</label>
+                <input type="number" name="youtube_music.max_history" id="youtube_music.max_history"
+                       value="{{ settings.youtube_music.max_history }}">
+                <span class="field-desc">Maximum number of songs to keep in listen history.</span>
+            </div>
+        </div>
+    </div>
+
+    {# ── Notes ───────────────────────────────────────────────────────── #}
+    <div class="settings-card">
+        <div class="settings-card-header">
+            <h3>Notes &amp; Reminders</h3>
+        </div>
+        <div class="settings-grid">
+            <div class="checkbox-field">
+                <label for="notes.enabled">
+                    <input type="checkbox" name="notes.enabled" id="notes.enabled"
+                           {% if settings.notes.enabled %}checked{% endif %}>
+                    Enable Notes
+                </label>
+                <span class="field-desc">Allow The Claw to create, search, and manage notes and reminders.</span>
+            </div>
+            <div>
+                <label for="notes.max_notes">Max Notes</label>
+                <input type="number" name="notes.max_notes" id="notes.max_notes"
+                       value="{{ settings.notes.max_notes }}">
+                <span class="field-desc">Maximum number of notes to store.</span>
+            </div>
+        </div>
+        <button type="button" class="advanced-toggle" onclick="toggleAdvanced(this, 'notes-adv')">Show advanced</button>
+        <div class="advanced-fields" id="notes-adv">
+            <div>
+                <label for="notes.storage_dir">Storage Folder</label>
+                <input type="text" name="notes.storage_dir" id="notes.storage_dir"
+                       value="{{ settings.notes.storage_dir }}">
+                <span class="field-desc">Where notes and reminders are stored on disk.</span>
+            </div>
+        </div>
+    </div>
+
+    {# ── Local Calendar ──────────────────────────────────────────────── #}
+    <div class="settings-card">
+        <div class="settings-card-header">
+            <h3>Local Calendar</h3>
+        </div>
+        <div class="settings-grid">
+            <div class="checkbox-field">
+                <label for="local_calendar.enabled">
+                    <input type="checkbox" name="local_calendar.enabled" id="local_calendar.enabled"
+                           {% if settings.local_calendar.enabled %}checked{% endif %}>
+                    Enable Local Calendar
+                </label>
+                <span class="field-desc">Private on-device calendar. Events stay on this machine only.</span>
+            </div>
+        </div>
+        <button type="button" class="advanced-toggle" onclick="toggleAdvanced(this, 'localcal-adv')">Show advanced</button>
+        <div class="advanced-fields" id="localcal-adv">
+            <div>
+                <label for="local_calendar.storage_file">Storage File</label>
+                <input type="text" name="local_calendar.storage_file" id="local_calendar.storage_file"
+                       value="{{ settings.local_calendar.storage_file }}">
+                <span class="field-desc">JSON file where calendar events are stored.</span>
+            </div>
+        </div>
+    </div>
+
+    {# ── Google Accounts ─────────────────────────────────────────────── #}
+    <div class="settings-card">
+        <div class="settings-card-header">
+            <h3>Google Accounts</h3>
+        </div>
+        <div class="settings-grid">
+            <div class="field-full">
+                <span class="field-desc">
+                    Manage Google accounts for Calendar, Gmail, and YouTube Music.<br>
+                    To add or re-authenticate accounts, run: <code>python mcp_tools/google_auth/setup_auth.py</code>
+                </span>
+            </div>
+        </div>
+        <button type="button" class="advanced-toggle" onclick="toggleAdvanced(this, 'gauth-adv')">Show advanced</button>
+        <div class="advanced-fields" id="gauth-adv">
+            <div class="settings-grid">
+                <div>
+                    <label for="google_auth.credentials_file">Credentials File</label>
+                    <input type="text" name="google_auth.credentials_file" id="google_auth.credentials_file"
+                           value="{{ settings.google_auth.credentials_file }}">
+                    <span class="field-desc">Path to Google OAuth client credentials JSON (shared across all accounts).</span>
+                </div>
+            </div>
+        </div>
+        <div id="google-accounts-container">
+            {% for label, acct in settings.google_auth.accounts.items() %}
+            <div class="google-account-card" data-label="{{ label }}">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
+                    <strong>{{ label }}</strong>
+                    <span class="gacct-email" data-label="{{ label }}" style="font-size:0.85em; opacity:0.7;">{{ acct.email }}</span>
+                </div>
+                <div class="settings-grid">
+                    <div class="checkbox-field">
+                        <label>
+                            <input type="checkbox" class="gacct-cal-enabled" data-label="{{ label }}"
+                                   {% if acct.calendar.enabled %}checked{% endif %}>
+                            Google Calendar
+                        </label>
+                    </div>
+                    <div class="checkbox-field">
+                        <label>
+                            <input type="checkbox" class="gacct-gmail-enabled" data-label="{{ label }}"
+                                   {% if acct.gmail.enabled %}checked{% endif %}>
+                            Gmail
+                        </label>
+                    </div>
+                    <div class="checkbox-field">
+                        <label>
+                            <input type="checkbox" class="gacct-ytm" data-label="{{ label }}"
+                                   {% if acct.youtube_music %}checked{% endif %}>
+                            YouTube Music
+                        </label>
+                    </div>
+                </div>
+                <button type="button" class="advanced-toggle" onclick="toggleAdvanced(this, 'gacct-adv-{{ label }}')">Show advanced</button>
+                <div class="advanced-fields" id="gacct-adv-{{ label }}">
+                    <div class="settings-grid">
+                        <div>
+                            <label>Default Calendar</label>
+                            <input type="text" class="gacct-cal-default" data-label="{{ label }}"
+                                   value="{{ acct.calendar.default_calendar }}">
+                        </div>
+                        <div>
+                            <label>Timezone</label>
+                            <input type="text" class="gacct-cal-tz" data-label="{{ label }}"
+                                   value="{{ acct.calendar.timezone }}">
+                        </div>
+                        <div>
+                            <label>Gmail Max Results</label>
+                            <input type="number" class="gacct-gmail-max" data-label="{{ label }}"
+                                   value="{{ acct.gmail.max_results }}">
+                        </div>
+                        <div>
+                            <label>Gmail Default Label</label>
+                            <input type="text" class="gacct-gmail-label" data-label="{{ label }}"
+                                   value="{{ acct.gmail.default_label }}">
+                        </div>
+                        <div>
+                            <label>Token File</label>
+                            <input type="text" class="gacct-token" data-label="{{ label }}"
+                                   value="{{ acct.token_file }}" readonly>
+                            <span class="field-desc">Managed by setup script.</span>
+                        </div>
+                    </div>
+                    <button type="button" class="remove-account-btn" data-label="{{ label }}"
+                            style="margin-top:0.5rem; background:var(--pico-del-color,#c62828); border:none; padding:0.3rem 0.8rem; font-size:0.85em; cursor:pointer; color:white; border-radius:4px;">
+                        Remove Account
+                    </button>
+                </div>
+            </div>
+            {% else %}
+            <p style="padding:0.5rem 1rem; opacity:0.7;">No Google accounts configured. Run the setup script to add one.</p>
+            {% endfor %}
+        </div>
+    </div>
+
+    {# ── Chat ────────────────────────────────────────────────────────── #}
+    <div class="settings-card">
+        <div class="settings-card-header">
+            <h3>Chat</h3>
+        </div>
+        <div class="settings-grid">
+            <div class="checkbox-field">
+                <label for="chat.save_conversations">
+                    <input type="checkbox" name="chat.save_conversations" id="chat.save_conversations"
+                           {% if settings.chat.save_conversations %}checked{% endif %}>
+                    Auto-Save Conversations
+                </label>
+                <span class="field-desc">Automatically save every conversation. When off, save manually.</span>
+            </div>
+            <div>
+                <label for="chat.session_timeout">Session Timeout</label>
+                <input type="number" name="chat.session_timeout" id="chat.session_timeout"
+                       value="{{ settings.chat.session_timeout }}">
+                <span class="field-desc">Seconds of inactivity before starting a fresh session. The Claw will recall relevant memories from past sessions automatically. (86400 = 24 hours)</span>
+            </div>
+        </div>
+        <button type="button" class="advanced-toggle" onclick="toggleAdvanced(this, 'chat-adv')">Show advanced</button>
+        <div class="advanced-fields" id="chat-adv">
+            <div>
+                <label for="chat.conversations_dir">Save Location</label>
+                <input type="text" name="chat.conversations_dir" id="chat.conversations_dir"
+                       value="{{ settings.chat.conversations_dir }}">
+                <span class="field-desc">Folder where saved conversations are stored.</span>
+            </div>
+        </div>
+    </div>
+
+    {# ── Server ──────────────────────────────────────────────────────── #}
+    <div class="settings-card">
+        <div class="settings-card-header">
+            <h3>Server</h3>
+        </div>
+        <div class="settings-grid">
+            <div>
+                <label for="admin.port">Port</label>
+                <input type="number" name="admin.port" id="admin.port"
+                       value="{{ settings.admin.port }}">
+                <span class="field-desc">Port number for the admin panel web interface.</span>
+            </div>
+        </div>
+        <button type="button" class="advanced-toggle" onclick="toggleAdvanced(this, 'admin-adv')">Show advanced</button>
+        <div class="advanced-fields" id="admin-adv">
+            <div>
+                <label for="admin.host">Listen Address</label>
+                <input type="text" name="admin.host" id="admin.host"
+                       value="{{ settings.admin.host }}">
+                <span class="field-desc">Network address to listen on. 0.0.0.0 = all interfaces.</span>
+            </div>
+            <div>
+                <label for="admin.log_buffer_size">Log Buffer</label>
+                <input type="number" name="admin.log_buffer_size" id="admin.log_buffer_size"
+                       value="{{ settings.admin.log_buffer_size }}">
+                <span class="field-desc">How many log lines to keep in the log viewer.</span>
+            </div>
+        </div>
+    </div>
+
+    <button type="button" id="save-btn">Save Settings</button>
+</form>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function toggleAdvanced(btn, id) {
+    const el = document.getElementById(id);
+    const open = el.classList.toggle('open');
+    btn.textContent = open ? 'Hide advanced' : 'Show advanced';
+}
+
+/* ── Wake word model list (dynamic) ─────────────────────────────────── */
+
+const activeModels = {{ settings.wake.model_paths | tojson }};
+const thresholds = {{ settings.wake.thresholds | tojson }};
+
+fetch('/api/wake/models')
+    .then(r => r.json())
+    .then(data => {
+        const container = document.getElementById('wake-models-list');
+        const thresholdsContainer = document.getElementById('wake-thresholds-list');
+        const thresholdsSection = document.getElementById('wake-thresholds-section');
+        container.innerHTML = '';
+        thresholdsContainer.innerHTML = '';
+
+        const allModels = [...data.builtin];
+        data.custom.forEach(m => { if (!allModels.includes(m)) allModels.push(m); });
+
+        allModels.forEach(model => {
+            const isActive = activeModels.includes(model);
+            const isCustom = data.custom.includes(model);
+            const label = model + (isCustom ? ' (custom)' : '');
+
+            const div = document.createElement('div');
+            div.className = 'checkbox-field';
+            div.innerHTML = `<label><input type="checkbox" class="wake-model-cb" value="${model}" ${isActive ? 'checked' : ''}> ${label}</label>`;
+            container.appendChild(div);
+
+            /* Per-model threshold */
+            const tDiv = document.createElement('div');
+            const tVal = thresholds[model] || '';
+            tDiv.innerHTML = `<label>${model}</label><input type="number" class="wake-threshold-input" data-model="${model}" value="${tVal}" step="0.05" min="0" max="1" placeholder="default">`;
+            thresholdsContainer.appendChild(tDiv);
+        });
+
+        if (allModels.length > 0) thresholdsSection.style.display = '';
+    })
+    .catch(() => {
+        document.getElementById('wake-models-list').innerHTML = '<span class="field-desc">Could not load wake word models.</span>';
+    });
+
+/* ── Google account remove buttons ────────────────────────────────── */
+
+document.querySelectorAll('.remove-account-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+        const label = this.dataset.label;
+        if (!confirm('Remove Google account "' + label + '"?')) return;
+        fetch('/api/google-accounts/' + encodeURIComponent(label), { method: 'DELETE' })
+            .then(r => r.json())
+            .then(d => { if (d.status === 'ok') location.reload(); });
+    });
+});
+
+/* ── Save handler ────────────────────────────────────────────────────── */
+
+document.getElementById('save-btn').addEventListener('click', function(e) {
+    e.preventDefault();
+    const form = document.getElementById('settings-form');
+    const data = {};
+
+    /* Standard two-level fields (skip google account and wake model inputs) */
+    const skipClasses = ['wake-model-cb', 'wake-threshold-input',
+        'gacct-cal-enabled', 'gacct-gmail-enabled', 'gacct-ytm',
+        'gacct-cal-default', 'gacct-cal-tz', 'gacct-gmail-max',
+        'gacct-gmail-label', 'gacct-token'];
+
+    form.querySelectorAll('input, textarea, select').forEach(el => {
+        if (skipClasses.some(c => el.classList.contains(c))) return;
+        const parts = el.name.split('.');
+        if (parts.length !== 2) return;
+        const [section, key] = parts;
+        if (!data[section]) data[section] = {};
+
+        if (el.type === 'checkbox') {
+            data[section][key] = el.checked;
+        } else if (el.type === 'number' || el.type === 'range') {
+            if (el.value !== '') data[section][key] = Number(el.value);
+        } else {
+            data[section][key] = el.value || null;
+        }
+    });
+
+    /* Collect wake word model checkboxes */
+    const selectedModels = [];
+    document.querySelectorAll('.wake-model-cb:checked').forEach(cb => {
+        selectedModels.push(cb.value);
+    });
+    if (!data.wake) data.wake = {};
+    data.wake.model_paths = selectedModels;
+
+    /* Collect per-model thresholds */
+    const perModelThresholds = {};
+    document.querySelectorAll('.wake-threshold-input').forEach(inp => {
+        if (inp.value) {
+            perModelThresholds[inp.dataset.model] = Number(inp.value);
+        }
+    });
+    data.wake.thresholds = perModelThresholds;
+
+    /* Collect Google accounts */
+    const accounts = {};
+    document.querySelectorAll('.google-account-card').forEach(card => {
+        const label = card.dataset.label;
+        const q = (cls) => card.querySelector('.' + cls + '[data-label="' + label + '"]');
+        accounts[label] = {
+            email: q('gacct-email') ? q('gacct-email').textContent.trim() : '',
+            token_file: q('gacct-token') ? q('gacct-token').value : '',
+            calendar: {
+                enabled: q('gacct-cal-enabled') ? q('gacct-cal-enabled').checked : false,
+                default_calendar: q('gacct-cal-default') ? q('gacct-cal-default').value : 'primary',
+                calendars: {},
+                timezone: q('gacct-cal-tz') ? q('gacct-cal-tz').value : 'America/New_York',
+            },
+            gmail: {
+                enabled: q('gacct-gmail-enabled') ? q('gacct-gmail-enabled').checked : false,
+                max_results: q('gacct-gmail-max') ? Number(q('gacct-gmail-max').value) || 10 : 10,
+                default_label: q('gacct-gmail-label') ? q('gacct-gmail-label').value : 'INBOX',
+            },
+            youtube_music: q('gacct-ytm') ? q('gacct-ytm').checked : false,
+        };
+    });
+    if (!data.google_auth) data.google_auth = {};
+    data.google_auth.accounts = accounts;
+
+    fetch('/api/settings', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+    })
+    .then(r => r.json())
+    .then(d => { if (d.status === 'ok') location.reload(); });
+});
+</script>
+{% endblock %}

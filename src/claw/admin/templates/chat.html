@@ -1,0 +1,452 @@
+{% extends "base.html" %}
+{% block title %}Chat{% endblock %}
+{% block main_class %}container-fluid{% endblock %}
+
+{% block content %}
+<div class="chat-layout">
+    <!-- Conversation sidebar (always visible on desktop) -->
+    <div class="convo-sidebar" id="convo-sidebar">
+        <div class="convo-sidebar-header">
+            <strong>Conversations</strong>
+        </div>
+        <button class="convo-new-btn" onclick="newChat()">+ New Chat</button>
+        <div class="convo-list" id="convo-list"></div>
+    </div>
+
+    <div class="chat-container">
+        <div class="chat-header">
+            <div class="chat-header-left">
+                <button class="btn-sidebar-toggle convo-mobile-toggle" onclick="toggleSidebar()" aria-label="Conversations">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 12h18M3 6h18M3 18h18"/>
+                    </svg>
+                </button>
+                <h2>Chat</h2>
+            </div>
+            <div class="chat-header-right">
+                <button class="btn-save-chat" id="save-btn" onclick="saveConversation()" style="display:none">Save</button>
+                <button class="btn-new-chat" onclick="newChat()">New Chat</button>
+            </div>
+        </div>
+
+        <!-- Context meter -->
+        <div class="context-meter" id="context-meter">
+            <div class="context-meter-bar">
+                <div class="context-meter-fill" id="context-fill"></div>
+            </div>
+            <span class="context-meter-label" id="context-label">Context: 0 / {{ context_window }} tokens (0%)</span>
+        </div>
+
+        <div class="chat-messages" id="messages">
+            <div class="chat-welcome">
+                <p>Talk to <strong>The Claw</strong>. Type a message below.</p>
+            </div>
+        </div>
+
+        <div class="chat-input-bar">
+            <textarea id="chat-input" placeholder="Type a message..." rows="1"
+                      onkeydown="handleKey(event)" autofocus></textarea>
+            <button id="send-btn" onclick="sendMessage()" aria-label="Send">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/>
+                </svg>
+            </button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const messagesEl = document.getElementById('messages');
+const inputEl = document.getElementById('chat-input');
+const sendBtn = document.getElementById('send-btn');
+const saveBtn = document.getElementById('save-btn');
+const contextFill = document.getElementById('context-fill');
+const contextLabel = document.getElementById('context-label');
+let processing = false;
+let currentConvoId = null;
+let chatMessages = [];  // local message log for saving
+const autoSave = {{ 'true' if save_conversations else 'false' }};
+const contextWindow = {{ context_window }};
+const ttsEnabled = {{ 'true' if tts_enabled else 'false' }};
+const ttsAutoplay = {{ 'true' if tts_autoplay else 'false' }};
+let currentAudio = null;
+
+function handleKey(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+    }
+}
+
+function autoResize() {
+    inputEl.style.height = 'auto';
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 150) + 'px';
+}
+inputEl.addEventListener('input', autoResize);
+
+function scrollToBottom() {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function setProcessing(on) {
+    processing = on;
+    inputEl.disabled = on;
+    sendBtn.disabled = on;
+    if (!on) inputEl.focus();
+}
+
+function updateContextMeter(promptTokens) {
+    if (!promptTokens || !contextWindow) return;
+    const pct = Math.min(100, Math.round((promptTokens / contextWindow) * 100));
+    contextFill.style.width = pct + '%';
+
+    // Color shift: green → yellow → red
+    if (pct < 50) {
+        contextFill.style.background = 'var(--claw-green)';
+    } else if (pct < 80) {
+        contextFill.style.background = 'var(--claw-yellow)';
+    } else {
+        contextFill.style.background = 'var(--claw-accent)';
+    }
+
+    contextLabel.textContent = 'Context: ' + promptTokens.toLocaleString() + ' / ' + contextWindow.toLocaleString() + ' tokens (' + pct + '%)';
+}
+
+function updateSaveButton() {
+    if (!autoSave && chatMessages.length > 0) {
+        saveBtn.style.display = '';
+    } else {
+        saveBtn.style.display = 'none';
+    }
+}
+
+function appendMessage(role, content, toolsUsed, usage) {
+    // Remove welcome message if present
+    const welcome = messagesEl.querySelector('.chat-welcome');
+    if (welcome) welcome.remove();
+
+    const bubble = document.createElement('div');
+    bubble.className = 'chat-bubble chat-' + role;
+
+    const text = document.createElement('div');
+    text.className = 'chat-text';
+    text.textContent = content;
+    bubble.appendChild(text);
+
+    if (toolsUsed && toolsUsed.length > 0) {
+        const tools = document.createElement('div');
+        tools.className = 'chat-tools';
+        toolsUsed.forEach(function(name) {
+            const badge = document.createElement('span');
+            badge.className = 'tool-badge';
+            badge.textContent = name;
+            tools.appendChild(badge);
+        });
+        bubble.appendChild(tools);
+    }
+
+    if (usage && usage.elapsed_s) {
+        const meta = document.createElement('div');
+        meta.className = 'chat-meta';
+        const parts = [];
+        parts.push(usage.elapsed_s + 's');
+        if (usage.tokens_per_sec > 0) parts.push(usage.tokens_per_sec + ' tok/s');
+        if (usage.total_tokens > 0) parts.push(usage.total_tokens + ' tokens');
+        if (usage.llm_calls > 1) parts.push(usage.llm_calls + ' calls');
+        meta.textContent = parts.join(' · ');
+        bubble.appendChild(meta);
+    }
+
+    // TTS play button for assistant messages
+    if (role === 'assistant' && ttsEnabled && content) {
+        const btn = document.createElement('button');
+        btn.className = 'tts-play-btn';
+        btn.title = 'Play audio';
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+        btn.onclick = function() { playTTS(content, btn); };
+        bubble.appendChild(btn);
+    }
+
+    messagesEl.appendChild(bubble);
+    scrollToBottom();
+}
+
+function playTTS(text, btn) {
+    // Stop any currently playing audio
+    if (currentAudio) {
+        var oldSrc = currentAudio.src;
+        currentAudio.pause();
+        currentAudio = null;
+        URL.revokeObjectURL(oldSrc);
+        // Reset all play buttons
+        document.querySelectorAll('.tts-play-btn.playing').forEach(function(b) {
+            b.classList.remove('playing');
+            b.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+        });
+    }
+
+    // Show loading state
+    btn.classList.add('playing');
+    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
+
+    fetch('/api/tts', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text: text}),
+    })
+    .then(function(res) {
+        if (!res.ok) throw new Error('TTS request failed');
+        return res.blob();
+    })
+    .then(function(blob) {
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        currentAudio = audio;
+
+        audio.onended = function() {
+            currentAudio = null;
+            btn.classList.remove('playing');
+            btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+            URL.revokeObjectURL(url);
+        };
+
+        audio.play();
+    })
+    .catch(function(err) {
+        console.error('TTS playback error:', err);
+        btn.classList.remove('playing');
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+    });
+}
+
+function showTyping() {
+    const el = document.createElement('div');
+    el.className = 'chat-bubble chat-assistant chat-typing';
+    el.id = 'typing-indicator';
+    el.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span>';
+    messagesEl.appendChild(el);
+    scrollToBottom();
+}
+
+function hideTyping() {
+    const el = document.getElementById('typing-indicator');
+    if (el) el.remove();
+}
+
+async function sendMessage() {
+    if (processing) return;
+    const text = inputEl.value.trim();
+    if (!text) return;
+
+    inputEl.value = '';
+    inputEl.style.height = 'auto';
+    appendMessage('user', text);
+    chatMessages.push({role: 'user', content: text});
+    updateSaveButton();
+    setProcessing(true);
+    showTyping();
+
+    try {
+        const res = await fetch('/api/chat', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({message: text}),
+        });
+        hideTyping();
+        if (!res.ok) {
+            const err = await res.json().catch(function() { return {}; });
+            appendMessage('assistant', err.error || 'Request failed.');
+        } else {
+            const data = await res.json();
+            appendMessage('assistant', data.content, data.tools_used, data.usage);
+            chatMessages.push({
+                role: 'assistant',
+                content: data.content,
+                tools_used: data.tools_used,
+                usage: data.usage,
+            });
+
+            // Update context meter from last_prompt_tokens (actual context size)
+            if (data.usage && data.usage.last_prompt_tokens) {
+                updateContextMeter(data.usage.last_prompt_tokens);
+            }
+
+            // Auto-play TTS if enabled
+            if (ttsAutoplay && data.content) {
+                var autoBtn = messagesEl.querySelector('.chat-bubble:last-child .tts-play-btn');
+                if (autoBtn) playTTS(data.content, autoBtn);
+            }
+
+            // Auto-save if enabled
+            if (autoSave) {
+                await saveConversation(true);
+            }
+            updateSaveButton();
+        }
+    } catch (err) {
+        hideTyping();
+        appendMessage('assistant', 'Error: could not reach the server.');
+    } finally {
+        setProcessing(false);
+    }
+}
+
+async function saveConversation(silent) {
+    if (chatMessages.length === 0) return;
+    try {
+        const res = await fetch('/api/conversations/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({id: currentConvoId, messages: chatMessages}),
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+            currentConvoId = data.id;
+            if (!silent) {
+                saveBtn.textContent = 'Saved!';
+                setTimeout(function() { saveBtn.textContent = 'Save'; }, 1500);
+            }
+            loadConversationList();
+        }
+    } catch (e) {
+        if (!silent) {
+            saveBtn.textContent = 'Error';
+            setTimeout(function() { saveBtn.textContent = 'Save'; }, 1500);
+        }
+    }
+}
+
+async function newChat() {
+    try {
+        const res = await fetch('/api/chat/new', {method: 'POST'});
+        if (!res.ok) throw new Error('Failed to reset');
+    } catch (e) {
+        appendMessage('assistant', 'Could not start a new chat. Please try again.');
+        return;
+    }
+    messagesEl.replaceChildren();
+    const welcome = document.createElement('div');
+    welcome.className = 'chat-welcome';
+    welcome.innerHTML = '<p>Talk to <strong>The Claw</strong>. Type a message below.</p>';
+    messagesEl.appendChild(welcome);
+    inputEl.value = '';
+    inputEl.style.height = 'auto';
+    inputEl.focus();
+    currentConvoId = null;
+    chatMessages = [];
+    updateSaveButton();
+    contextFill.style.width = '0%';
+    contextLabel.textContent = 'Context: 0 / ' + contextWindow.toLocaleString() + ' tokens (0%)';
+}
+
+// ── Conversation list ──────────────────────────────────────────────
+
+function toggleSidebar() {
+    const sidebar = document.getElementById('convo-sidebar');
+    sidebar.classList.toggle('open');
+    if (sidebar.classList.contains('open')) {
+        loadConversationList();
+    }
+}
+
+async function loadConversationList() {
+    const listEl = document.getElementById('convo-list');
+    try {
+        const res = await fetch('/api/conversations');
+        const convos = await res.json();
+        listEl.innerHTML = '';
+        if (convos.length === 0) {
+            listEl.innerHTML = '<div class="convo-empty">No saved conversations</div>';
+            return;
+        }
+        convos.forEach(function(c) {
+            const item = document.createElement('div');
+            item.className = 'convo-item' + (c.id === currentConvoId ? ' active' : '');
+
+            const title = document.createElement('div');
+            title.className = 'convo-title';
+            title.textContent = c.title;
+            title.onclick = function() { loadConversation(c.id); };
+
+            const meta = document.createElement('div');
+            meta.className = 'convo-meta';
+            const date = new Date(c.updated_at);
+            meta.textContent = c.message_count + ' msgs · ' + date.toLocaleDateString();
+
+            const del = document.createElement('button');
+            del.className = 'convo-delete';
+            del.textContent = '×';
+            del.title = 'Delete';
+            del.onclick = function(e) { e.stopPropagation(); deleteConversation(c.id); };
+
+            const row = document.createElement('div');
+            row.className = 'convo-item-row';
+            row.appendChild(title);
+            row.appendChild(del);
+
+            item.appendChild(row);
+            item.appendChild(meta);
+            listEl.appendChild(item);
+        });
+    } catch (e) {
+        listEl.innerHTML = '<div class="convo-empty">Failed to load</div>';
+    }
+}
+
+async function loadConversation(id) {
+    try {
+        const res = await fetch('/api/conversations/' + id);
+        if (!res.ok) return;
+        const convo = await res.json();
+
+        // Clear and render
+        messagesEl.replaceChildren();
+        currentConvoId = convo.id;
+        chatMessages = convo.messages || [];
+
+        chatMessages.forEach(function(msg) {
+            appendMessage(msg.role, msg.content, msg.tools_used, msg.usage);
+        });
+
+        // Replay messages into agent session so it has context
+        const loadRes = await fetch('/api/chat/load', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({messages: chatMessages}),
+        });
+        const loadData = await loadRes.json();
+
+        // Update context meter with estimated token count
+        if (loadData.estimated_tokens) {
+            updateContextMeter(loadData.estimated_tokens);
+        }
+
+        updateSaveButton();
+
+        // Close sidebar on mobile
+        if (window.innerWidth < 768) {
+            document.getElementById('convo-sidebar').classList.remove('open');
+        }
+    } catch (e) {
+        console.error('Failed to load conversation', e);
+    }
+}
+
+async function deleteConversation(id) {
+    try {
+        await fetch('/api/conversations/' + id, {method: 'DELETE'});
+        if (id === currentConvoId) {
+            currentConvoId = null;
+        }
+        loadConversationList();
+    } catch (e) {
+        console.error('Failed to delete conversation', e);
+    }
+}
+
+// Load conversation list on page load
+loadConversationList();
+</script>
+{% endblock %}

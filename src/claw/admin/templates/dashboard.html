@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<div hx-ext="sse" sse-connect="/api/events">
+
+    <h2>Dashboard</h2>
+
+    <div class="stat-grid">
+        <div class="card">
+            <h3>Status</h3>
+            <div id="status-badge" sse-swap="status">
+                <span class="status-badge status-{{ status.state }}">{{ status.state }}</span>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3>Memory</h3>
+            <div id="memory-stats" sse-swap="memory">
+                {% if status.memory_stats %}
+                    {% for key, val in status.memory_stats.items() %}
+                    <div>
+                        <span class="stat-value">{{ val }}</span>
+                        <span class="stat-label">{{ key }}</span>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <span class="stat-label">Loading...</span>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card">
+            <h3>MCP Servers</h3>
+            <div id="mcp-status" sse-swap="mcp">
+                {% if status.mcp_servers %}
+                    {% for name, tools in status.mcp_servers.items() %}
+                    <div>
+                        <strong>{{ name }}</strong>: {{ tools | length }} tools
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <span class="stat-label">No servers connected</span>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>Last Transcription</h3>
+        <div id="transcription" class="transcript-box {% if status.last_transcription %}has-text{% endif %}" sse-swap="transcription">
+            {{ status.last_transcription or "Waiting for speech..." }}
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>Last Response</h3>
+        <div id="response" class="transcript-box {% if status.last_response %}has-text{% endif %}" sse-swap="response">
+            {{ status.last_response or "No response yet" }}
+        </div>
+    </div>
+
+</div>
+{% endblock %}

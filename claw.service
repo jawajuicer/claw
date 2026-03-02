@@ -1,0 +1,23 @@
+[Unit]
+Description=The Claw — Local-first voice AI agent
+After=pipewire.service
+Wants=pipewire.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/claw
+ExecStart=%h/claw/.venv/bin/python -m claw --mode both
+Restart=on-failure
+RestartSec=5
+Environment=PATH=%h/claw/.venv/bin:/usr/local/bin:/usr/bin:/bin
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+# Resource limits
+MemoryMax=8G
+CPUQuota=200%
+
+[Install]
+WantedBy=default.target

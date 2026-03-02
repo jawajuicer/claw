@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Logs{% endblock %}
+
+{% block content %}
+<h2>Live Logs</h2>
+
+<div style="display: flex; gap: 1rem; margin-bottom: 1rem;">
+    <button id="scroll-toggle" class="outline">Auto-scroll: ON</button>
+    <button hx-get="/api/logs" hx-target="#log-content" hx-swap="innerHTML"
+            hx-on::after-request="document.getElementById('log-content').textContent = JSON.parse(event.detail.xhr.responseText).logs.join('\n')"
+            class="outline">
+        Refresh
+    </button>
+</div>
+
+<pre class="log-viewer" id="log-viewer"><code id="log-content">{% for line in logs %}{{ line }}
+{% endfor %}</code></pre>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    const viewer = document.getElementById('log-viewer');
+    const content = document.getElementById('log-content');
+    let autoScroll = true;
+
+    document.getElementById('scroll-toggle').addEventListener('click', function() {
+        autoScroll = !autoScroll;
+        this.textContent = 'Auto-scroll: ' + (autoScroll ? 'ON' : 'OFF');
+    });
+
+    // Poll for new logs every 2 seconds
+    setInterval(() => {
+        fetch('/api/logs')
+            .then(r => r.json())
+            .then(data => {
+                content.textContent = data.logs.join('\n');
+                if (autoScroll) {
+                    viewer.scrollTop = viewer.scrollHeight;
+                }
+            });
+    }, 2000);
+})();
+</script>
+{% endblock %}
