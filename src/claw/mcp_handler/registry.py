@@ -73,9 +73,19 @@ class MCPRegistry:
                 self._openai_tools.append(openai_tool)
                 log.info("Registered tool: %s (server: %s)", tool_name, server_name)
 
-    def get_openai_tools(self) -> list[dict]:
-        """Return tool definitions in OpenAI function-calling format."""
-        return self._openai_tools
+    def get_openai_tools(self, servers: list[str] | None = None) -> list[dict]:
+        """Return tool definitions in OpenAI function-calling format.
+
+        Args:
+            servers: If provided, only return tools from these servers.
+        """
+        if servers is None:
+            return self._openai_tools
+        allowed = set()
+        for tool_name, server_name in self._tool_map.items():
+            if server_name in servers:
+                allowed.add(tool_name)
+        return [t for t in self._openai_tools if t["function"]["name"] in allowed]
 
     def get_server_for_tool(self, tool_name: str) -> str | None:
         """Look up which server owns a given tool."""

@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import logging
 from contextlib import AsyncExitStack
-from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from claw.config import get_settings
 
 log = logging.getLogger(__name__)
 
@@ -25,7 +23,6 @@ class MCPClient:
 
     async def connect(self) -> None:
         """Spawn the server subprocess and establish a session."""
-        cfg = get_settings().mcp
         self._exit_stack = AsyncExitStack()
 
         server_params = StdioServerParameters(

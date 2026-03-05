@@ -17,11 +17,17 @@ class MemoryRetriever:
     def __init__(self, store: MemoryStore) -> None:
         self.store = store
 
-    def retrieve_context(self, query: str, max_results: int = 5) -> str:
+    def retrieve_context(self, query: str, max_results: int | None = None, max_chars: int = 600) -> str:
         """Retrieve relevant context from all memory collections.
 
         Returns a formatted string suitable for injection into the LLM system prompt.
+        Capped at *max_chars* to keep prompt tokens manageable on CPU inference.
         """
+        from claw.config import get_settings
+
+        if max_results is None:
+            max_results = get_settings().memory.max_results
+
         sections: list[str] = []
 
         # Search facts first (highest value)
@@ -39,7 +45,10 @@ class MemoryRetriever:
         if not sections:
             return ""
 
-        return "--- Memory Context ---\n" + "\n\n".join(sections) + "\n--- End Memory ---"
+        context = "--- Memory Context ---\n" + "\n\n".join(sections) + "\n--- End Memory ---"
+        if len(context) > max_chars:
+            context = context[:max_chars].rsplit("\n", 1)[0] + "\n--- End Memory ---"
+        return context
 
     def store_conversation_turn(self, role: str, content: str, session_id: str) -> None:
         """Store a single conversation turn in memory."""

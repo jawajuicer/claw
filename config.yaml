@@ -1,123 +1,118 @@
-# The Claw — Default Configuration
-
 audio:
-  device_index: null          # null = system default
+  device_index: null
   sample_rate: 16000
   channels: 1
-  block_size: 1280            # 80ms at 16kHz — openWakeWord chunk size
-  silence_threshold: 0.01     # RMS threshold for silence detection
-  silence_duration: 2.0       # seconds of silence before stopping recording
-  max_record_seconds: 30      # safety cap
-  chime_enabled: true          # play acknowledgment tone on wake word detection
-  chime_volume: 0.5            # 0.0–1.0
-  chime_frequency: 880         # Hz (plays ascending two-tone: 0.75x → 1x)
-  chime_duration_ms: 200       # total chime duration in milliseconds
-
+  block_size: 1280
+  silence_threshold: 0.01
+  silence_duration: 2.0
+  max_record_seconds: 30
+  chime_enabled: true
+  chime_volume: 0.9
+  chime_frequency: 880
+  chime_duration_ms: 350
 wake:
   model_paths:
-    - hey_jarvis_v0.1
-  thresholds: {}
+  - hey_claw
+  - hey_jarvis_v0.1
+  thresholds:
+    hey_claw: 0.5
   default_threshold: 0.5
   inference_framework: onnx
   custom_models_dir: data/models/wake
-
 whisper:
   model_size: base
   compute_type: int8
   language: en
   beam_size: 5
-
 tts:
   enabled: true
-  engine: piper                # "piper" or "fish_speech"
+  engine: piper
   piper_model: data/models/tts/piper/en_US-lessac-medium.onnx
   piper_speaker_id: null
   fish_speech_url: http://localhost:8090
-  fish_speech_reference_audio: ""
-  fish_speech_reference_text: ""
-  speed: 1.0                   # 0.5 = slow, 1.0 = normal, 2.0 = fast
-  voice_loop_enabled: true     # speak responses through physical speaker
-  admin_chat_enabled: true     # show play buttons in admin chat
-  admin_chat_autoplay: false   # auto-play voice responses in admin chat
-
+  fish_speech_reference_audio: ''
+  fish_speech_reference_text: ''
+  speed: 1.0
+  voice_loop_enabled: true
+  admin_chat_enabled: true
+  admin_chat_autoplay: false
 llm:
   base_url: http://localhost:11434/v1
-  api_key: ollama              # Ollama ignores this but OpenAI SDK requires it
-  model: qwen3:14b
+  api_key: ollama
+  model: qwen3.5-unsloth:0.8b
   temperature: 0.7
   max_tokens: 1024
-  max_iterations: 5            # bounded agent loop
-  context_window: 32768        # model context window size in tokens
-  system_prompt: |
-    You are The Claw, a helpful voice assistant. You are running locally
-    on the user's machine. You have access to tools via MCP servers.
-    Be concise in your responses since they will be spoken aloud.
+  max_iterations: 5
+  context_window: 32768
+  timeout: 45
+  thinking: false
+  system_prompt: 'You are The Claw, a helpful voice assistant. You are running locally
 
+    on the user''s machine. You have access to tools via MCP servers.
+
+    Be concise in your responses since they will be spoken aloud. DO NOT OVERTHINK.'
 memory:
   chroma_path: data/chromadb
   embedding_model: all-MiniLM-L6-v2
-  max_results: 5
+  max_results: 3
   conversation_collection: conversations
   facts_collection: facts
   categories_collection: categories
-
 mcp:
   tools_dir: mcp_tools
-  startup_timeout: 10          # seconds to wait for server handshake
+  startup_timeout: 10
   enabled_servers:
-    - youtube_music
-    - system_control
-    - notes
-    - local_calendar
-    - google_calendar
-    - gmail
-
+  - youtube_music
+  - system_control
+  - weather
+  - notes
+  - local_calendar
+  - google_calendar
+  - gmail
+  voice_servers:
+  - system_control
 youtube_music:
-  enabled: false
+  enabled: true
   auth_file: data/youtube_music/auth.json
   history_file: data/youtube_music/history.json
   auto_radio: true
   default_volume: 80
   max_history: 500
   max_search_results: 5
-
+weather:
+  api_key: "3c8810c88d3055606192cdda5e700942"
+  default_location: ""
 notes:
   enabled: true
   storage_dir: data/notes
-  max_notes: 1000
-
+  max_notes: 0
 local_calendar:
   enabled: true
   storage_file: data/calendar/local.json
-
 google_auth:
   credentials_file: data/google/credentials.json
   scopes:
-    - https://www.googleapis.com/auth/gmail.compose
-    - https://www.googleapis.com/auth/gmail.readonly
-    - https://www.googleapis.com/auth/calendar
-  accounts: {}
-  # Accounts are added via: python mcp_tools/google_auth/setup_auth.py
-  # Example structure after setup:
-  #   accounts:
-  #     personal:
-  #       email: user@gmail.com
-  #       token_file: data/google/tokens/personal.json
-  #       calendar:
-  #         enabled: true
-  #         default_calendar: primary
-  #         calendars: {}
-  #         timezone: America/New_York
-  #       gmail:
-  #         enabled: true
-  #         max_results: 10
-  #         default_label: INBOX
-  #       youtube_music: false
-
+  - https://www.googleapis.com/auth/gmail.compose
+  - https://www.googleapis.com/auth/gmail.readonly
+  - https://www.googleapis.com/auth/calendar
+  accounts:
+    personal:
+      email: dallascowboys9964@gmail.com
+      token_file: data/google/tokens/personal.json
+      calendar:
+        enabled: true
+        default_calendar: primary
+        calendars: {}
+        timezone: America/New_York
+      gmail:
+        enabled: true
+        max_results: 10
+        default_label: INBOX
+      youtube_music: false
 chat:
   save_conversations: false
   conversations_dir: data/conversations
-
+  session_timeout: 86400
 admin:
   host: 0.0.0.0
   port: 8080

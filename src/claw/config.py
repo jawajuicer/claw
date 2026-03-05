@@ -79,11 +79,13 @@ class TTSConfig(BaseModel):
 class LLMConfig(BaseModel):
     base_url: str = "http://localhost:11434/v1"
     api_key: str = "ollama"
-    model: str = "qwen2.5:14b"
+    model: str = "qwen3.5:4b"
     temperature: float = 0.7
     max_tokens: int = 1024
     max_iterations: int = 5
     context_window: int = 32768
+    timeout: int = 45  # seconds per LLM call
+    thinking: bool = False  # enable chain-of-thought (qwen3 models)
     system_prompt: str = (
         "You are The Claw, a helpful voice assistant. You are running locally "
         "on the user's machine. You have access to tools via MCP servers. "
@@ -113,7 +115,7 @@ class YouTubeMusicConfig(BaseModel):
 class NotesConfig(BaseModel):
     enabled: bool = True
     storage_dir: str = "data/notes"
-    max_notes: int = 1000
+    max_notes: int = 0  # 0 = unlimited
 
 
 class LocalCalendarConfig(BaseModel):
@@ -152,6 +154,11 @@ class GoogleAuthConfig(BaseModel):
     accounts: dict[str, GoogleAccountConfig] = Field(default_factory=dict)
 
 
+class WeatherConfig(BaseModel):
+    api_key: str = ""  # OpenWeatherMap API key (free tier)
+    default_location: str = ""  # User's location, e.g. "Akron, OH" — set in settings
+
+
 class MCPConfig(BaseModel):
     tools_dir: str = "mcp_tools"
     startup_timeout: int = 10
@@ -160,6 +167,9 @@ class MCPConfig(BaseModel):
             "youtube_music", "system_control", "notes",
             "local_calendar", "google_calendar", "gmail",
         ]
+    )
+    voice_servers: list[str] = Field(
+        default_factory=lambda: ["system_control"],
     )
 
     @field_validator("enabled_servers", mode="before")
@@ -259,6 +269,7 @@ class Settings(BaseSettings):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
+    weather: WeatherConfig = Field(default_factory=WeatherConfig)
     youtube_music: YouTubeMusicConfig = Field(default_factory=YouTubeMusicConfig)
     notes: NotesConfig = Field(default_factory=NotesConfig)
     local_calendar: LocalCalendarConfig = Field(default_factory=LocalCalendarConfig)

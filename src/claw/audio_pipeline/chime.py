@@ -24,12 +24,16 @@ def play_listening_chime() -> None:
         return
 
     try:
-        t1 = np.linspace(0, cfg.chime_duration_ms / 2000, int(_SAMPLE_RATE * cfg.chime_duration_ms / 2000), endpoint=False)
-        t2 = np.linspace(0, cfg.chime_duration_ms / 2000, int(_SAMPLE_RATE * cfg.chime_duration_ms / 2000), endpoint=False)
+        log.info("Playing listening chime (freq=%d, dur=%dms, vol=%.1f)",
+                 cfg.chime_frequency, cfg.chime_duration_ms, cfg.chime_volume)
+
+        half_dur = cfg.chime_duration_ms / 2000
+        n_samples = int(_SAMPLE_RATE * half_dur)
+        t = np.linspace(0, half_dur, n_samples, endpoint=False)
 
         # Two-tone ascending chime (e.g. 660 Hz → 880 Hz)
-        tone1 = np.sin(2 * np.pi * cfg.chime_frequency * 0.75 * t1)
-        tone2 = np.sin(2 * np.pi * cfg.chime_frequency * t2)
+        tone1 = np.sin(2 * np.pi * cfg.chime_frequency * 0.75 * t)
+        tone2 = np.sin(2 * np.pi * cfg.chime_frequency * t)
         samples = np.concatenate([tone1, tone2]).astype(np.float32)
 
         # Fade in/out envelope to avoid clicks (5ms each)
@@ -41,5 +45,6 @@ def play_listening_chime() -> None:
 
         sd.play(samples, samplerate=_SAMPLE_RATE)
         sd.wait()
+        log.info("Chime playback complete")
     except Exception:
         log.exception("Failed to play listening chime")

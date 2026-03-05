@@ -76,15 +76,25 @@ class AudioCapture:
     async def record_until_silence(self) -> np.ndarray:
         """Record audio until silence is detected.
 
+        Drains any buffered audio first (preserves speech from continuous
+        utterances like "hey jarvis tell me a joke"), then waits for speech
+        to begin before starting silence detection.
+
         Returns the full recorded audio as a float32 numpy array.
         """
         cfg = get_settings().audio
-        frames: list[np.ndarray] = []
+
+        # Drain any buffered audio (speech from before/during chime)
+        frames: list[np.ndarray] = self.drain_buffer()
         silent_chunks = 0
         silence_chunks_needed = int(cfg.silence_duration * cfg.sample_rate / cfg.block_size)
         max_chunks = int(cfg.max_record_seconds * cfg.sample_rate / cfg.block_size)
+        heard_speech = any(
+            float(np.sqrt(np.mean(c ** 2))) >= cfg.silence_threshold for c in frames
+        )
 
-        log.info("Recording... (silence_threshold=%.4f, timeout=%ds)", cfg.silence_threshold, cfg.max_record_seconds)
+        log.info("Recording... (silence_threshold=%.4f, timeout=%ds, buffered=%d, speech=%s)",
+                 cfg.silence_threshold, cfg.max_record_seconds, len(frames), heard_speech)
 
         while len(frames) < max_chunks:
             chunk = self.read_chunk()
@@ -95,13 +105,15 @@ class AudioCapture:
             frames.append(chunk)
             rms = float(np.sqrt(np.mean(chunk ** 2)))
 
-            if rms < cfg.silence_threshold:
+            if rms >= cfg.silence_threshold:
+                heard_speech = True
+                silent_chunks = 0
+            elif heard_speech:
+                # Only count silence after we've heard speech
                 silent_chunks += 1
                 if silent_chunks >= silence_chunks_needed:
                     log.info("Silence detected after %d chunks", len(frames))
                     break
-            else:
-                silent_chunks = 0
 
         if len(frames) >= max_chunks:
             log.warning("Recording hit max duration (%ds)", cfg.max_record_seconds)
@@ -109,6 +121,12 @@ class AudioCapture:
         audio = np.concatenate(frames) if frames else np.array([], dtype=np.float32)
         log.info("Recorded %.2f seconds of audio", len(audio) / cfg.sample_rate)
         return audio
+
+    def drain_buffer(self) -> list[np.ndarray]:
+        """Pop all chunks from the buffer and return them."""
+        chunks = list(self._buffer)
+        self._buffer.clear()
+        return chunks
 
     def flush(self) -> None:
         """Discard all buffered audio."""

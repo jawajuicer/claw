@@ -28,9 +28,23 @@ class WakeWordDetector:
 
     def load(self) -> None:
         """Download/load the wake word model(s)."""
+        from claw.config import PROJECT_ROOT
+
         openwakeword.utils.download_models()
+
+        # Resolve custom model names to full filesystem paths
+        cfg = get_settings().wake
+        custom_dir = PROJECT_ROOT / cfg.custom_models_dir
+        resolved = []
+        for mp in self._model_paths:
+            custom_path = custom_dir / f"{mp}.onnx"
+            if custom_path.is_file():
+                resolved.append(str(custom_path))
+            else:
+                resolved.append(mp)  # built-in model name
+
         self._model = OWWModel(
-            wakeword_models=self._model_paths,
+            wakeword_models=resolved,
             inference_framework=self._framework,
         )
         log.info(
@@ -61,6 +75,9 @@ class WakeWordDetector:
         if self._model is None or self._paused:
             return None
 
+        # openWakeWord expects int16 PCM; AudioCapture provides float32
+        if chunk.dtype != np.int16:
+            chunk = (chunk * 32767).astype(np.int16)
         prediction = self._model.predict(chunk)
 
         for name, score in prediction.items():

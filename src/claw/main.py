@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import signal
 
 import uvicorn
@@ -20,6 +21,20 @@ from claw.memory_engine.retriever import MemoryRetriever
 from claw.memory_engine.store import MemoryStore
 
 log = logging.getLogger(__name__)
+
+# Pattern to strip wake word prefixes from transcription.
+# The audio buffer may capture speech overlapping the wake word,
+# so STT can produce "hey claw play something" instead of "play something".
+_WAKE_PREFIX_RE = re.compile(
+    r"^(?:hey\s+claw|claw)[,;:.\s!]*",
+    re.IGNORECASE,
+)
+
+
+def _strip_wake_prefix(text: str) -> str:
+    """Remove wake word prefix from transcribed text."""
+    stripped = _WAKE_PREFIX_RE.sub("", text).strip()
+    return stripped if stripped else text
 
 
 class Claw:
@@ -115,46 +130,73 @@ class Claw:
                 log.info("Wake word detected: %s", detected)
                 await self.broadcaster.update_state("listening", last_wake_word=detected)
                 await asyncio.to_thread(play_listening_chime)
-                capture.flush()  # discard wake word + chime audio
 
-                # Record until silence
-                audio = await capture.record_until_silence()
-                if len(audio) < self.settings.audio.sample_rate * 0.5:
-                    log.info("Recording too short, ignoring")
-                    await self.broadcaster.update_state("idle")
-                    continue
+                # Conversation turn loop: handles follow-up questions
+                # from Claw without requiring the wake word again.
+                # All tools are passed — the agent's tool router selects
+                # only what's needed via a lightweight manifest call.
+                tools = self.registry.get_openai_tools() or None
+                response = ""
 
-                # Transcribe
-                await self.broadcaster.update_state("processing")
-                text = await transcriber.transcribe(audio)
-                if not text.strip():
-                    log.info("Empty transcription, ignoring")
-                    await self.broadcaster.update_state("idle")
-                    continue
+                while not self._shutdown_event.is_set():
+                    # Record until silence — buffer already contains any speech
+                    # the user said after the wake word (continuous utterances
+                    # like "hey jarvis tell me a joke" are preserved)
+                    audio = await capture.record_until_silence()
+                    if len(audio) < self.settings.audio.sample_rate * 0.5:
+                        log.info("Recording too short, ignoring")
+                        break
 
-                await self.broadcaster.update_transcription(text)
-                log.info("User said: %s", text)
+                    # Transcribe
+                    await self.broadcaster.update_state("processing")
+                    text = await transcriber.transcribe(audio)
+                    if not text.strip():
+                        log.info("Empty transcription, ignoring")
+                        break
 
-                # Agent processing
-                tools = self.registry.get_openai_tools()
-                response = await self.agent.process_utterance(text, tools=tools or None)
-                await self.broadcaster.update_response(response)
-                log.info("Claw responds: %s", response)
+                    # Strip wake word prefix from transcription — the audio
+                    # buffer may include speech overlapping the wake word.
+                    text = _strip_wake_prefix(text)
 
-                # TTS playback
-                if self.tts and self.settings.tts.voice_loop_enabled:
-                    await self.broadcaster.update_state("speaking")
-                    wake.pause()
-                    try:
-                        await self.tts.speak(response)
-                    except Exception:
-                        log.exception("TTS playback failed")
-                    finally:
-                        wake.resume()
-                        capture.flush()
+                    await self.broadcaster.update_transcription(text)
+                    log.info("User said: %s", text)
 
-                # Post-conversation fact extraction (background)
-                self._spawn_bg(self._background_fact_extraction())
+                    # Agent processing (with tools so voice can use get_time etc.)
+                    response = await self.agent.process_utterance(text, tools=tools)
+                    await self.broadcaster.update_response(response)
+                    log.info("Claw responds: %s", response)
+
+                    # TTS playback
+                    if self.tts and self.settings.tts.voice_loop_enabled:
+                        log.info("Starting TTS playback...")
+                        await self.broadcaster.update_state("speaking")
+                        wake.pause()
+                        try:
+                            await self.tts.speak(response)
+                            log.info("TTS playback complete")
+                        except Exception:
+                            log.exception("TTS playback failed")
+                        finally:
+                            wake.resume()
+                            capture.flush()
+                    else:
+                        log.info("TTS skipped (tts=%s, voice_loop=%s)",
+                                 self.tts is not None, self.settings.tts.voice_loop_enabled)
+
+                    # If Claw asked a follow-up question, listen again.
+                    # Check last 10 chars to handle trailing emojis after "?"
+                    if "?" in response.rstrip()[-10:]:
+                        log.info("Follow-up question detected, listening for response")
+                        await self.broadcaster.update_state("listening")
+                        await asyncio.to_thread(play_listening_chime)
+                        continue
+
+                    # Otherwise, conversation turn is done
+                    break
+
+                # Post-conversation fact extraction (background, gated)
+                if response and not (self.agent.last_usage and self.agent.last_usage.timed_out):
+                    self._spawn_bg(self._gated_fact_extraction())
 
                 await self.broadcaster.update_state("idle")
 
@@ -200,8 +242,9 @@ class Claw:
 
             await self.broadcaster.update_state("idle")
 
-            # Background fact extraction
-            self._spawn_bg(self._background_fact_extraction())
+            # Background fact extraction (gated)
+            if not (self.agent.last_usage and self.agent.last_usage.timed_out):
+                self._spawn_bg(self._gated_fact_extraction())
 
     async def run_admin_server(self) -> None:
         """Run the admin panel web server."""
@@ -263,6 +306,14 @@ class Claw:
         task = asyncio.create_task(coro)
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
+
+    async def _gated_fact_extraction(self) -> None:
+        """Wait briefly then extract facts, but only if the LLM is free."""
+        await asyncio.sleep(2)
+        if self.llm.busy:
+            log.info("Skipping fact extraction — LLM is busy")
+            return
+        await self._background_fact_extraction()
 
     async def _background_fact_extraction(self) -> None:
         """Extract facts from the latest conversation in the background."""
