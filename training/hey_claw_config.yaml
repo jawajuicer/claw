@@ -1,0 +1,65 @@
+# Training config for "hey claw" wake word model
+# Used by openWakeWord's train.py automatic pipeline
+
+model_name: "hey_claw"
+
+target_phrase:
+  - "hey claw"
+
+# Phonetically similar negative phrases to reduce false positives
+custom_negative_phrases:
+  - "hey claude"
+  - "hey call"
+  - "he called"
+  - "hey clock"
+  - "the claw"
+  - "hey class"
+  - "hey claws"
+  - "hey clause"
+  - "hey clog"
+  - "hay bale"
+  - "a claw"
+  - "hey clay"
+
+# Sample generation
+n_samples: 50000
+n_samples_val: 5000
+tts_batch_size: 50
+augmentation_batch_size: 16
+augmentation_rounds: 2
+
+# Piper sample generator path
+piper_sample_generator_path: "./piper-sample-generator"
+
+# Output directory
+output_dir: "./output"
+
+# Room impulse responses for augmentation
+rir_paths:
+  - "./data/mit_rirs/Audio"
+
+# Background audio paths (empty - we only have RIRs)
+background_paths: []
+background_paths_duplication_rate: []
+
+# Pre-computed features for false-positive validation (~11 hours speech/noise/music)
+false_positive_validation_data_path: "./data/validation_set_features.npy"
+
+# Pre-computed negative features (ACAV100M - ~2000 hours diverse audio)
+feature_data_files:
+  "ACAV100M_sample": "./data/openwakeword_features_ACAV100M_2000_hrs_16bit.npy"
+
+# Batch sizes per class
+batch_n_per_class:
+  "ACAV100M_sample": 1024
+  "adversarial_negative": 50
+  "positive": 50
+
+# Model architecture
+model_type: "dnn"
+layer_size: 32
+
+# Training parameters
+steps: 50000
+max_negative_weight: 1500
+target_false_positives_per_hour: 0.2
