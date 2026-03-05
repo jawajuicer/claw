@@ -88,8 +88,8 @@ def _resolve(account: str, service_name: str = "calendar"):
     if svc is None:
         return None, None, (
             "Google Calendar is not configured. "
-            "Run: python mcp_tools/google_auth/setup_auth.py "
-            "and enable Google Calendar in Settings."
+            "Link a Google account in Settings > Google Accounts, "
+            "then enable Google Calendar."
         )
     return svc, acct_cfg, ""
 

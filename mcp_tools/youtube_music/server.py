@@ -8,6 +8,7 @@ from pathlib import Path
 # Ensure sibling modules (player.py) are importable when launched as subprocess
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import json
 import yaml
 from mcp.server.fastmcp import FastMCP
 
@@ -65,14 +66,15 @@ def _get_player():
         auto_radio=cfg.get("auto_radio", True),
         max_history=cfg.get("max_history", 500),
         max_search_results=cfg.get("max_search_results", 5),
+        client_id=cfg.get("client_id", ""),
+        client_secret=cfg.get("client_secret", ""),
     )
     return _player
 
 
 _NOT_CONFIGURED = (
     "YouTube Music is not configured. "
-    "Enable it in Settings and run the auth setup script: "
-    "python mcp_tools/youtube_music/setup_auth.py"
+    "Enable it in Settings and link a Google account with YouTube Music enabled."
 )
 
 
@@ -154,6 +156,26 @@ def set_volume(level: int) -> str:
     if not _is_enabled():
         return _NOT_CONFIGURED
     return _get_player().set_volume(level)
+
+
+@mcp.tool()
+def seek(position: float) -> str:
+    """Seek to a position in seconds within the currently playing song.
+
+    Args:
+        position: The position in seconds to seek to.
+    """
+    if not _is_enabled():
+        return _NOT_CONFIGURED
+    return _get_player().seek(position)
+
+
+@mcp.tool()
+def get_status() -> str:
+    """Get current playback status including position, duration, and track info. Returns JSON."""
+    if not _is_enabled():
+        return json.dumps({"playing": False, "error": "not_configured"})
+    return json.dumps(_get_player().get_status())
 
 
 @mcp.tool()

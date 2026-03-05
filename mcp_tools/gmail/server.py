@@ -73,8 +73,8 @@ def _resolve(account: str):
     if svc is None:
         return None, None, (
             "Gmail is not configured. "
-            "Run: python mcp_tools/google_auth/setup_auth.py "
-            "and enable Gmail in Settings."
+            "Link a Google account in Settings > Google Accounts, "
+            "then enable Gmail."
         )
     return svc, acct_cfg, ""
 

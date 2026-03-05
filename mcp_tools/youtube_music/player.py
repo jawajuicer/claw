@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import socket
 import subprocess
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,7 +16,12 @@ log = logging.getLogger(__name__)
 
 
 class MusicPlayer:
-    """Manages mpv playback, song queue, radio generation, and listen history."""
+    """Manages mpv playback, song queue, radio generation, and listen history.
+
+    Uses mpv as a separate process with JSON IPC over a Unix socket rather than
+    libmpv in-process.  This avoids conflicts with the MCP stdio transport
+    (piped stdin/stdout) that cause libmpv to immediately go idle.
+    """
 
     def __init__(
         self,
@@ -23,6 +31,8 @@ class MusicPlayer:
         auto_radio: bool = True,
         max_history: int = 500,
         max_search_results: int = 5,
+        client_id: str = "",
+        client_secret: str = "",
     ) -> None:
         self._auth_file = auth_file
         self._history_file = Path(history_file)
@@ -30,8 +40,11 @@ class MusicPlayer:
         self._auto_radio = auto_radio
         self._max_history = max_history
         self._max_search_results = max_search_results
+        self._client_id = client_id
+        self._client_secret = client_secret
 
-        self._mpv = None
+        self._mpv_proc: subprocess.Popen | None = None
+        self._ipc_path: str | None = None
         self._volume = self._default_volume
         self._current: dict | None = None
         self._queue: list[dict] = []
@@ -42,6 +55,8 @@ class MusicPlayer:
         self._has_played = False  # guard against mpv's initial idle state
 
         self._load_history()
+
+    # ── ytmusicapi ──────────────────────────────────────────────
 
     def _ensure_yt(self):
         """Lazy-init ytmusicapi client. Thread-safe via double-checked locking."""
@@ -54,41 +69,158 @@ class MusicPlayer:
 
             auth_path = Path(self._auth_file)
             if auth_path.exists():
-                self._yt = YTMusic(str(auth_path))
+                if self._client_id and self._client_secret:
+                    from ytmusicapi.auth.oauth.credentials import OAuthCredentials
+                    oauth_creds = OAuthCredentials(self._client_id, self._client_secret)
+                    self._yt = YTMusic(str(auth_path), oauth_credentials=oauth_creds)
+                else:
+                    self._yt = YTMusic(str(auth_path))
             else:
                 self._yt = YTMusic()
         return self._yt
 
+    # ── mpv process + IPC ───────────────────────────────────────
+
     def _ensure_mpv(self):
-        """Lazy-init mpv player with idle observer for auto-advance. Thread-safe."""
-        if self._mpv is not None:
-            return self._mpv
+        """Launch mpv as a separate process with JSON IPC. Thread-safe."""
+        if self._mpv_proc is not None and self._mpv_proc.poll() is None:
+            return
         with self._lock:
-            if self._mpv is not None:
-                return self._mpv
-            import mpv
+            if self._mpv_proc is not None and self._mpv_proc.poll() is None:
+                return
 
-            player = mpv.MPV(
-                video=False,
-                ytdl=False,
-                input_default_bindings=False,
-                input_vo_keyboard=False,
+            self._ipc_path = f"/tmp/claw-mpv-{os.getpid()}.sock"
+            # Clean up stale socket
+            if os.path.exists(self._ipc_path):
+                os.unlink(self._ipc_path)
+
+            # Explicitly pass env vars needed for PipeWire/PulseAudio audio output.
+            # The MCP subprocess may not always inherit the full environment.
+            env = os.environ.copy()
+            env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+            env.setdefault("HOME", str(Path.home()))
+
+            self._mpv_proc = subprocess.Popen(
+                [
+                    "mpv",
+                    "--idle=yes",
+                    "--no-video",
+                    "--no-terminal",
+                    "--ao=pipewire,pulse,alsa",
+                    f"--volume={self._volume}",
+                    f"--input-ipc-server={self._ipc_path}",
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=env,
+                start_new_session=True,
             )
-            player.volume = self._volume
 
-            self._has_played = False  # guard against initial idle state
+            # Wait for IPC socket to appear
+            for _ in range(50):
+                if os.path.exists(self._ipc_path):
+                    break
+                time.sleep(0.1)
+            else:
+                log.error("mpv IPC socket did not appear at %s", self._ipc_path)
+                return
 
-            @player.property_observer("idle-active")
-            def _on_idle(_name, value):
-                """Fired when mpv transitions to idle after finishing a track."""
-                if value and self._has_played:
-                    try:
-                        self._on_track_end()
-                    except Exception:
-                        log.exception("Error in track-end handler")
+            self._has_played = False
+            self._start_idle_watcher()
+            log.info("mpv process started (pid=%d, ipc=%s)", self._mpv_proc.pid, self._ipc_path)
 
-            self._mpv = player
-        return self._mpv
+    def _mpv_command(self, *args):
+        """Send a command to mpv via IPC and return the parsed response.
+
+        Skips interleaved event messages (mpv sends events like start-file,
+        end-file to all connected clients).
+        """
+        if self._ipc_path is None:
+            return None
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(5)
+            sock.connect(self._ipc_path)
+            cmd = json.dumps({"command": list(args)}) + "\n"
+            sock.sendall(cmd.encode())
+            buf = b""
+            while True:
+                while b"\n" not in buf:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        sock.close()
+                        return None
+                    buf += chunk
+                line, buf = buf.split(b"\n", 1)
+                if not line.strip():
+                    continue
+                msg = json.loads(line)
+                # Skip event messages — only return command responses
+                if "event" not in msg:
+                    sock.close()
+                    return msg
+            # unreachable, but satisfy lint
+        except (OSError, json.JSONDecodeError) as e:
+            log.debug("mpv IPC command %s failed: %s", args, e)
+            return None
+
+    def _mpv_set_property(self, name: str, value):
+        return self._mpv_command("set_property", name, value)
+
+    def _mpv_get_property(self, name: str):
+        resp = self._mpv_command("get_property", name)
+        if resp and resp.get("error") == "success":
+            return resp.get("data")
+        return None
+
+    def _start_idle_watcher(self):
+        """Background thread that watches mpv idle-active for auto-advance."""
+        def watcher():
+            try:
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                sock.settimeout(None)
+                sock.connect(self._ipc_path)
+                # Register property observer
+                sock.sendall(
+                    json.dumps({"command": ["observe_property", 1, "idle-active"]}).encode() + b"\n"
+                )
+                buf = b""
+                prev_idle = None  # Track previous state to detect transitions
+                while self._mpv_proc and self._mpv_proc.poll() is None:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        if not line.strip():
+                            continue
+                        try:
+                            msg = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if (
+                            msg.get("event") == "property-change"
+                            and msg.get("name") == "idle-active"
+                        ):
+                            is_idle = msg.get("data")
+                            # Only trigger on transition from playing (False) to idle (True).
+                            # This avoids firing on mpv's initial idle state.
+                            if is_idle and prev_idle is False and self._has_played:
+                                try:
+                                    self._on_track_end()
+                                except Exception:
+                                    log.exception("Error in track-end handler")
+                            prev_idle = is_idle
+                sock.close()
+            except Exception:
+                log.debug("Idle watcher thread ended")
+
+        t = threading.Thread(target=watcher, daemon=True)
+        t.start()
+
+    # ── Track-end / auto-advance ────────────────────────────────
 
     def _on_track_end(self):
         """Called when mpv becomes idle. Advances the queue."""
@@ -102,6 +234,8 @@ class MusicPlayer:
             else:
                 self._current = None
                 log.info("Queue empty, playback finished")
+
+    # ── History ─────────────────────────────────────────────────
 
     def _load_history(self):
         """Load listen history from JSON file."""
@@ -137,6 +271,8 @@ class MusicPlayer:
         if len(self._history) > self._max_history:
             self._history = self._history[-self._max_history :]
         self._save_history()
+
+    # ── Search / stream ─────────────────────────────────────────
 
     def search(self, query: str, limit: int | None = None) -> list[dict]:
         """Search YouTube Music, return list of track info dicts."""
@@ -184,6 +320,8 @@ class MusicPlayer:
         except subprocess.TimeoutExpired:
             raise RuntimeError("yt-dlp timed out extracting stream URL")
 
+    # ── Playback controls ───────────────────────────────────────
+
     def _play_track(self, track: dict, source: str = "user_request"):
         """Internal: stream a track via mpv. Called from play() or auto-advance."""
         video_id = track["video_id"]
@@ -193,7 +331,7 @@ class MusicPlayer:
             log.error("Failed to get stream URL for %s: %s", video_id, e)
             return
 
-        player = self._ensure_mpv()
+        self._ensure_mpv()
         with self._lock:
             self._current = {
                 **track,
@@ -204,7 +342,7 @@ class MusicPlayer:
 
         try:
             self._has_played = True
-            player.play(stream_url)
+            self._mpv_command("loadfile", stream_url)
         except Exception:
             log.exception("mpv failed to play stream URL")
             with self._lock:
@@ -270,30 +408,29 @@ class MusicPlayer:
     def pause(self) -> str:
         """Pause playback."""
         with self._lock:
-            if self._mpv is None or self._current is None:
+            if self._mpv_proc is None or self._current is None:
                 return "Nothing is playing"
             title = self._current["title"]
             artist = self._current["artist"]
-        self._mpv.pause = True
+        self._mpv_set_property("pause", True)
         return f"Paused: {title} by {artist}"
 
     def resume(self) -> str:
         """Resume playback."""
         with self._lock:
-            if self._mpv is None or self._current is None:
+            if self._mpv_proc is None or self._current is None:
                 return "Nothing to resume"
             title = self._current["title"]
             artist = self._current["artist"]
-        self._mpv.pause = False
+        self._mpv_set_property("pause", False)
         return f"Resumed: {title} by {artist}"
 
     def skip(self) -> str:
         """Skip to the next song in the queue."""
-        if self._mpv is None:
+        if self._mpv_proc is None:
             return "Nothing is playing"
         with self._lock:
             if not self._queue:
-                # Snapshot title before releasing lock, stop mpv outside lock
                 self._has_played = False
                 title = self._current["title"] if self._current else "music"
                 self._current = None
@@ -304,31 +441,71 @@ class MusicPlayer:
                 title = self._current["title"] if self._current else "Unknown"
                 empty = False
         if empty:
-            self._mpv.stop()  # outside lock to avoid deadlock with observer
+            self._mpv_command("stop")
             return "Queue is empty, playback stopped"
         self._play_track(next_track, source="auto_radio")
         return f"Skipped '{title}'. Now playing: {next_track['title']} by {next_track['artist']}"
 
     def stop(self) -> str:
         """Stop playback and clear queue."""
-        if self._mpv is None:
+        if self._mpv_proc is None:
             return "Nothing is playing"
         with self._lock:
             self._queue.clear()
-            self._generation += 1  # invalidate any pending radio queue generation
-            self._has_played = False  # prevent idle observer from auto-advancing
+            self._generation += 1
+            self._has_played = False
             title = self._current["title"] if self._current else "music"
             self._current = None
-        self._mpv.stop()  # outside lock to avoid deadlock with observer
+        self._mpv_command("stop")
         return f"Stopped playing {title}"
 
     def set_volume(self, level: int) -> str:
         """Set volume 0-100."""
         level = max(0, min(100, level))
         self._volume = level
-        if self._mpv is not None:
-            self._mpv.volume = level
+        if self._mpv_proc is not None and self._mpv_proc.poll() is None:
+            self._mpv_set_property("volume", float(level))
         return f"Volume set to {level}%"
+
+    def seek(self, position: float) -> str:
+        """Seek to an absolute position in seconds."""
+        if self._mpv_proc is None or self._mpv_proc.poll() is not None or self._current is None:
+            return "Nothing is playing"
+        position = max(0.0, position)
+        self._mpv_command("seek", position, "absolute")
+        return f"Seeked to {int(position)}s"
+
+    def get_status(self) -> dict:
+        """Return current playback status for the now-playing widget."""
+        if self._mpv_proc is None or self._mpv_proc.poll() is not None:
+            return {"playing": False}
+
+        idle = self._mpv_get_property("idle-active")
+        if idle is True or idle is None:
+            return {"playing": False}
+
+        paused = self._mpv_get_property("pause")
+        time_pos = self._mpv_get_property("time-pos")
+        duration = self._mpv_get_property("duration")
+        if paused is None or time_pos is None:
+            return {"playing": False}
+        duration = float(duration) if duration is not None else 0.0
+
+        with self._lock:
+            current = self._current
+        if current is None:
+            return {"playing": False}
+
+        return {
+            "playing": True,
+            "paused": paused,
+            "title": current.get("title", "Unknown"),
+            "artist": current.get("artist", "Unknown"),
+            "album": current.get("album", ""),
+            "time_pos": round(time_pos, 1),
+            "duration": round(duration, 1),
+            "volume": self._volume,
+        }
 
     def get_now_playing(self) -> dict | None:
         """Return current track info or None."""
@@ -345,11 +522,20 @@ class MusicPlayer:
             return list(reversed(self._history[-limit:]))
 
     def shutdown(self):
-        """Clean up mpv process."""
-        if self._mpv is not None:
+        """Clean up mpv process and IPC socket."""
+        if self._mpv_proc is not None:
             try:
-                self._mpv.terminate()
+                self._mpv_proc.terminate()
+                self._mpv_proc.wait(timeout=5)
             except Exception:
+                try:
+                    self._mpv_proc.kill()
+                except Exception:
+                    pass
+            self._mpv_proc = None
+        if self._ipc_path and os.path.exists(self._ipc_path):
+            try:
+                os.unlink(self._ipc_path)
+            except OSError:
                 pass
-            self._mpv = None
         self._current = None

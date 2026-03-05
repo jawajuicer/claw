@@ -127,7 +127,7 @@ def _is_enabled() -> bool:
 
 def _max_notes() -> int:
     cfg = _load_config()
-    return cfg.get("max_notes", 1000)
+    return cfg.get("max_notes", 0)
 
 
 _NOT_ENABLED = "Notes & Reminders is currently disabled. Enable it in Settings."
@@ -145,8 +145,9 @@ def create_note(title: str, content: str, tags: str = "") -> str:
     if not _is_enabled():
         return _NOT_ENABLED
     notes = _read_notes()
-    if len(notes) >= _max_notes():
-        return f"Cannot create note: maximum of {_max_notes()} notes reached."
+    limit = _max_notes()
+    if limit > 0 and len(notes) >= limit:
+        return f"Cannot create note: maximum of {limit} notes reached."
 
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
     note = {

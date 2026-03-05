@@ -60,7 +60,7 @@ def resolve_account(
         On failure account_config_dict is None.
     """
     if not accounts:
-        return ("", "No Google accounts configured. Run: python mcp_tools/google_auth/setup_auth.py", None)
+        return ("", "No Google accounts configured. Link one in Settings > Google Accounts.", None)
 
     # Build list of accounts that have this service enabled
     def _service_enabled(acct: dict) -> bool:
