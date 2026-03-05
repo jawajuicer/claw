@@ -24,6 +24,9 @@
                 <h2>Chat</h2>
             </div>
             <div class="chat-header-right">
+                <select id="model-select" class="chat-model-select" title="Model for this conversation">
+                    <option value="">Default</option>
+                </select>
                 <button class="btn-save-chat" id="save-btn" onclick="saveConversation()" style="display:none">Save</button>
                 <button class="btn-new-chat" onclick="newChat()">New Chat</button>
             </div>
@@ -249,10 +252,14 @@ async function sendMessage() {
     showTyping();
 
     try {
+        const chatBody = {message: text};
+        const selectedModel = modelSelect.value;
+        if (selectedModel) chatBody.model = selectedModel;
+
         const res = await fetch('/api/chat', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({message: text}),
+            body: JSON.stringify(chatBody),
         });
         hideTyping();
         if (!res.ok) {
@@ -445,6 +452,26 @@ async function deleteConversation(id) {
         console.error('Failed to delete conversation', e);
     }
 }
+
+// ── Model selector ────────────────────────────────────────────────
+
+const modelSelect = document.getElementById('model-select');
+
+fetch('/api/ollama/models')
+    .then(r => r.json())
+    .then(data => {
+        if (!data.models || !data.models.length) return;
+        data.models.forEach(m => {
+            const opt = document.createElement('option');
+            opt.value = m.name;
+            const paramSize = m.parameter_size || '';
+            const sizeGB = m.size ? (m.size / 1e9).toFixed(1) + 'GB' : '';
+            const extra = [paramSize, sizeGB].filter(Boolean).join(', ');
+            opt.textContent = m.name + (extra ? ' (' + extra + ')' : '');
+            modelSelect.appendChild(opt);
+        });
+    })
+    .catch(() => {});
 
 // Load conversation list on page load
 loadConversationList();

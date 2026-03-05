@@ -14,6 +14,29 @@
         <ul>
             <li><strong class="brand">THE CLAW</strong></li>
         </ul>
+
+        <div id="now-playing" class="now-playing" style="display:none">
+            <button class="np-btn" id="np-prev" title="Restart">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+            </button>
+            <button class="np-btn" id="np-play" title="Play/Pause">
+                <svg id="np-icon-play" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                <svg id="np-icon-pause" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M6 19h4V5H6zm8-14v14h4V5z"/></svg>
+            </button>
+            <button class="np-btn" id="np-skip" title="Skip">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6z"/></svg>
+            </button>
+            <div class="np-info">
+                <span class="np-title" id="np-title"></span>
+                <span class="np-artist" id="np-artist"></span>
+            </div>
+            <span class="np-time" id="np-current">0:00</span>
+            <div class="np-seek-wrap">
+                <input type="range" class="np-seek" id="np-seek" min="0" max="100" value="0" step="1">
+            </div>
+            <span class="np-time" id="np-duration">0:00</span>
+        </div>
+
         <ul>
             <li><a href="/"{% if request.url.path == "/" %} aria-current="page"{% endif %}>Chat</a></li>
             <li><a href="/dashboard"{% if request.url.path == "/dashboard" %} aria-current="page"{% endif %}>Dashboard</a></li>
@@ -31,5 +54,144 @@
     </footer>
 
     {% block scripts %}{% endblock %}
+
+    <script>
+    (function() {
+        const widget = document.getElementById('now-playing');
+        const titleEl = document.getElementById('np-title');
+        const artistEl = document.getElementById('np-artist');
+        const currentEl = document.getElementById('np-current');
+        const durationEl = document.getElementById('np-duration');
+        const seekBar = document.getElementById('np-seek');
+        const playBtn = document.getElementById('np-play');
+        const skipBtn = document.getElementById('np-skip');
+        const prevBtn = document.getElementById('np-prev');
+        const iconPlay = document.getElementById('np-icon-play');
+        const iconPause = document.getElementById('np-icon-pause');
+
+        let state = { playing: false, paused: false, time_pos: 0, duration: 0 };
+        let localTime = 0;
+        let seeking = false;
+        let tickTimer = null;
+        let pollInterval = null;
+        const POLL_ACTIVE = 2000;
+        const POLL_IDLE = 10000;
+
+        function fmt(s) {
+            s = Math.max(0, Math.floor(s));
+            const m = Math.floor(s / 60);
+            return m + ':' + String(s % 60).padStart(2, '0');
+        }
+
+        function updateUI() {
+            if (!state.playing) {
+                widget.style.display = 'none';
+                return;
+            }
+            widget.style.display = 'flex';
+            titleEl.textContent = state.title || '';
+            artistEl.textContent = state.artist || '';
+            durationEl.textContent = fmt(state.duration);
+            currentEl.textContent = fmt(localTime);
+            iconPlay.style.display = state.paused ? 'block' : 'none';
+            iconPause.style.display = state.paused ? 'none' : 'block';
+            if (!seeking) {
+                seekBar.max = Math.floor(state.duration) || 100;
+                seekBar.value = Math.floor(localTime);
+            }
+        }
+
+        function tick() {
+            if (state.playing && !state.paused) {
+                localTime = Math.min(localTime + 1, state.duration || 99999);
+                updateUI();
+            }
+        }
+
+        let polling = false;
+        let idleCount = 0;
+        const IDLE_BACKOFF_AFTER = 3;  // stay at active rate for 3 idle polls before backing off
+
+        function setPollRate(ms) {
+            if (pollInterval) clearInterval(pollInterval);
+            pollInterval = setInterval(poll, ms);
+        }
+
+        async function poll() {
+            if (polling) return;
+            polling = true;
+            try {
+                const r = await fetch('/api/music/status');
+                const data = await r.json();
+                const wasPlaying = state.playing;
+                state = data;
+                if (data.playing) {
+                    localTime = data.time_pos || 0;
+                    idleCount = 0;
+                    if (!wasPlaying) setPollRate(POLL_ACTIVE);
+                } else {
+                    idleCount++;
+                    if (idleCount >= IDLE_BACKOFF_AFTER && (wasPlaying || idleCount === IDLE_BACKOFF_AFTER)) {
+                        setPollRate(POLL_IDLE);
+                    }
+                }
+                updateUI();
+            } catch(e) {
+            } finally {
+                polling = false;
+            }
+        }
+
+        async function control(action, value) {
+            try {
+                await fetch('/api/music/control', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ action, value })
+                });
+            } catch(e) {}
+        }
+
+        playBtn.addEventListener('click', async () => {
+            if (!state.playing) return;
+            const action = state.paused ? 'resume' : 'pause';
+            state.paused = !state.paused;
+            updateUI();
+            await control(action);
+            setPollRate(POLL_ACTIVE);
+            poll();
+        });
+
+        skipBtn.addEventListener('click', async () => {
+            await control('skip');
+            setPollRate(POLL_ACTIVE);
+            setTimeout(poll, 500);
+        });
+
+        prevBtn.addEventListener('click', async () => {
+            localTime = 0;
+            updateUI();
+            await control('prev');
+            poll();
+        });
+
+        seekBar.addEventListener('input', () => {
+            seeking = true;
+            localTime = Number(seekBar.value);
+            currentEl.textContent = fmt(localTime);
+        });
+
+        seekBar.addEventListener('change', () => {
+            localTime = Number(seekBar.value);
+            control('seek', Number(seekBar.value));
+            seeking = false;
+        });
+
+        // Start at active rate so the widget appears quickly when music starts
+        poll();
+        pollInterval = setInterval(poll, POLL_ACTIVE);
+        tickTimer = setInterval(tick, 1000);
+    })();
+    </script>
 </body>
 </html>

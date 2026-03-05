@@ -14,10 +14,10 @@
         <div class="settings-grid">
             <div>
                 <label for="audio.device_index">Microphone</label>
-                <input type="text" name="audio.device_index" id="audio.device_index"
-                       value="{{ settings.audio.device_index if settings.audio.device_index is not none else '' }}"
-                       placeholder="System default">
-                <span class="field-desc">Which microphone to use. Leave blank for system default.</span>
+                <select name="audio.device_index" id="audio.device_index">
+                    <option value="">System Default</option>
+                </select>
+                <span class="field-desc">Which microphone to use. Leave as System Default for auto-detect.</span>
             </div>
             <div>
                 <label for="audio.silence_duration">Silence Timeout</label>
@@ -92,8 +92,9 @@
             </div>
             <div>
                 <label for="wake.inference_framework">Engine</label>
-                <input type="text" name="wake.inference_framework" id="wake.inference_framework"
-                       value="{{ settings.wake.inference_framework }}">
+                <select name="wake.inference_framework" id="wake.inference_framework">
+                    <option value="onnx" {% if settings.wake.inference_framework == 'onnx' %}selected{% endif %}>onnx</option>
+                </select>
                 <span class="field-desc">AI framework for wake word detection.</span>
             </div>
             <div class="field-full" id="wake-thresholds-section" style="display:none">
@@ -113,24 +114,40 @@
         <div class="settings-grid">
             <div>
                 <label for="whisper.model_size">Model Size</label>
-                <input type="text" name="whisper.model_size" id="whisper.model_size"
-                       value="{{ settings.whisper.model_size }}">
+                <select name="whisper.model_size" id="whisper.model_size">
+                    {% for sz in ['tiny', 'base', 'small', 'medium', 'large-v2', 'large-v3'] %}
+                    <option value="{{ sz }}" {% if settings.whisper.model_size == sz %}selected{% endif %}>{{ sz }}</option>
+                    {% endfor %}
+                </select>
                 <span class="field-desc">Larger models are more accurate but slower. 'base' is a good balance.</span>
             </div>
             <div>
                 <label for="whisper.language">Language</label>
-                <input type="text" name="whisper.language" id="whisper.language"
-                       value="{{ settings.whisper.language }}">
-                <span class="field-desc">Language code for speech recognition (e.g., 'en' for English).</span>
+                <select name="whisper.language" id="whisper.language">
+                    {% set languages = [
+                        ('en', 'English'), ('es', 'Spanish'), ('fr', 'French'), ('de', 'German'),
+                        ('it', 'Italian'), ('pt', 'Portuguese'), ('ru', 'Russian'), ('ja', 'Japanese'),
+                        ('ko', 'Korean'), ('zh', 'Chinese'), ('ar', 'Arabic'), ('hi', 'Hindi'),
+                        ('nl', 'Dutch'), ('pl', 'Polish'), ('sv', 'Swedish'), ('tr', 'Turkish'),
+                        ('uk', 'Ukrainian'), ('vi', 'Vietnamese'), ('th', 'Thai'), ('cs', 'Czech')
+                    ] %}
+                    {% for code, name in languages %}
+                    <option value="{{ code }}" {% if settings.whisper.language == code %}selected{% endif %}>{{ name }} ({{ code }})</option>
+                    {% endfor %}
+                </select>
+                <span class="field-desc">Language for speech recognition.</span>
             </div>
         </div>
         <button type="button" class="advanced-toggle" onclick="toggleAdvanced(this, 'whisper-adv')">Show advanced</button>
         <div class="advanced-fields" id="whisper-adv">
             <div>
                 <label for="whisper.compute_type">Precision</label>
-                <input type="text" name="whisper.compute_type" id="whisper.compute_type"
-                       value="{{ settings.whisper.compute_type }}">
-                <span class="field-desc">Math precision. 'int8' is fastest, 'float16' most accurate.</span>
+                <select name="whisper.compute_type" id="whisper.compute_type">
+                    <option value="int8" {% if settings.whisper.compute_type == 'int8' %}selected{% endif %}>int8 (fastest)</option>
+                    <option value="float16" {% if settings.whisper.compute_type == 'float16' %}selected{% endif %}>float16 (balanced)</option>
+                    <option value="float32" {% if settings.whisper.compute_type == 'float32' %}selected{% endif %}>float32 (precise)</option>
+                </select>
+                <span class="field-desc">Math precision. int8 is fastest, float32 most accurate.</span>
             </div>
             <div>
                 <label for="whisper.beam_size">Beam Size</label>
@@ -148,7 +165,7 @@
             <span class="hot-reload-badge">hot-reload</span>
         </div>
         <div class="settings-grid">
-            <div class="checkbox-field">
+            <div class="field-full checkbox-field">
                 <label for="tts.enabled">
                     <input type="checkbox" name="tts.enabled" id="tts.enabled"
                            {% if settings.tts.enabled %}checked{% endif %}>
@@ -156,13 +173,15 @@
                 </label>
                 <span class="field-desc">Allow The Claw to speak responses aloud.</span>
             </div>
+        </div>
+        <div class="settings-grid" style="margin-top:1rem;">
             <div>
                 <label for="tts.engine">Engine</label>
                 <select name="tts.engine" id="tts.engine">
                     <option value="piper" {% if settings.tts.engine == 'piper' %}selected{% endif %}>Piper (local, fast)</option>
                     <option value="fish_speech" {% if settings.tts.engine == 'fish_speech' %}selected{% endif %}>Fish Speech (voice cloning)</option>
                 </select>
-                <span class="field-desc">Piper is fast and runs locally. Fish Speech supports voice cloning via a separate server.</span>
+                <span class="field-desc">Piper is fast and runs locally. Fish Speech supports voice cloning.</span>
             </div>
             <div>
                 <label for="tts.speed">Speed</label>
@@ -171,17 +190,19 @@
                            value="{{ settings.tts.speed }}" min="0.5" max="2.0" step="0.1"
                            oninput="document.getElementById('tts-speed-val').textContent=this.value+'x'"
                            style="flex:1">
-                    <span id="tts-speed-val" style="min-width:2.5em; text-align:right; font-size:0.85rem;">{{ settings.tts.speed }}x</span>
+                    <span id="tts-speed-val" class="slider-value">{{ settings.tts.speed }}x</span>
                 </div>
-                <span class="field-desc">Speech speed. 0.5x = slow, 1.0x = normal, 2.0x = fast.</span>
+                <span class="field-desc">0.5x = slow, 1.0x = normal, 2.0x = fast.</span>
             </div>
+        </div>
+        <div class="settings-grid" style="margin-top:1rem;">
             <div class="checkbox-field">
                 <label for="tts.voice_loop_enabled">
                     <input type="checkbox" name="tts.voice_loop_enabled" id="tts.voice_loop_enabled"
                            {% if settings.tts.voice_loop_enabled %}checked{% endif %}>
                     Voice Loop Audio
                 </label>
-                <span class="field-desc">Speak responses through the physical speaker in voice/CLI mode.</span>
+                <span class="field-desc">Speak through the physical speaker in voice mode.</span>
             </div>
             <div class="checkbox-field">
                 <label for="tts.admin_chat_enabled">
@@ -189,7 +210,7 @@
                            {% if settings.tts.admin_chat_enabled %}checked{% endif %}>
                     Admin Chat Audio
                 </label>
-                <span class="field-desc">Show play buttons on chat responses in the admin panel.</span>
+                <span class="field-desc">Show play buttons on chat responses.</span>
             </div>
             <div class="checkbox-field">
                 <label for="tts.admin_chat_autoplay">
@@ -197,7 +218,7 @@
                            {% if settings.tts.admin_chat_autoplay %}checked{% endif %}>
                     Auto-Play in Chat
                 </label>
-                <span class="field-desc">Automatically speak every assistant response in the admin chat (not just via play button).</span>
+                <span class="field-desc">Auto-speak every response in admin chat.</span>
             </div>
         </div>
         <button type="button" class="advanced-toggle" onclick="toggleAdvanced(this, 'tts-adv')">Show advanced</button>
@@ -245,14 +266,20 @@
         <div class="settings-grid">
             <div>
                 <label for="llm.model">Model</label>
-                <input type="text" name="llm.model" id="llm.model"
-                       value="{{ settings.llm.model }}">
-                <span class="field-desc">Which AI model to use (e.g., qwen3:14b).</span>
+                <select name="llm.model" id="llm.model">
+                    <option value="{{ settings.llm.model }}" selected>{{ settings.llm.model }}</option>
+                </select>
+                <span class="field-desc">Which AI model to use. Lists models available in Ollama.</span>
             </div>
             <div>
                 <label for="llm.temperature">Creativity</label>
-                <input type="number" name="llm.temperature" id="llm.temperature"
-                       value="{{ settings.llm.temperature }}" step="any">
+                <div style="display:flex; align-items:center; gap:0.5rem;">
+                    <input type="range" name="llm.temperature" id="llm.temperature"
+                           value="{{ settings.llm.temperature }}" min="0" max="1" step="0.1"
+                           oninput="document.getElementById('llm-temp-val').textContent=this.value"
+                           style="flex:1">
+                    <span id="llm-temp-val" class="slider-value">{{ settings.llm.temperature }}</span>
+                </div>
                 <span class="field-desc">How creative responses are. 0 = very focused, 1 = very creative.</span>
             </div>
             <div>
@@ -304,8 +331,13 @@
         <div class="settings-grid">
             <div>
                 <label for="memory.max_results">Memory Recall</label>
-                <input type="number" name="memory.max_results" id="memory.max_results"
-                       value="{{ settings.memory.max_results }}">
+                <div style="display:flex; align-items:center; gap:0.5rem;">
+                    <input type="range" name="memory.max_results" id="memory.max_results"
+                           value="{{ settings.memory.max_results }}" min="1" max="10" step="1"
+                           oninput="document.getElementById('memory-recall-val').textContent=this.value"
+                           style="flex:1">
+                    <span id="memory-recall-val" class="slider-value">{{ settings.memory.max_results }}</span>
+                </div>
                 <span class="field-desc">How many memories to search when answering questions.</span>
             </div>
         </div>
@@ -382,13 +414,26 @@
             <h3>YouTube Music</h3>
         </div>
         <div class="settings-grid">
-            <div class="checkbox-field">
+            <div class="field-full checkbox-field">
                 <label for="youtube_music.enabled">
                     <input type="checkbox" name="youtube_music.enabled" id="youtube_music.enabled"
                            {% if settings.youtube_music.enabled %}checked{% endif %}>
                     Enable YouTube Music
                 </label>
-                <span class="field-desc">Turn on YouTube Music playback. Requires auth setup: <code>python mcp_tools/youtube_music/setup_auth.py</code></span>
+                <span class="field-desc">Let The Claw play music on request. Requires a linked YouTube Music account (see Google Accounts above).</span>
+            </div>
+        </div>
+        <div class="settings-grid" style="margin-top:1rem;">
+            <div>
+                <label for="youtube_music.default_volume">Default Volume</label>
+                <div style="display:flex; align-items:center; gap:0.5rem;">
+                    <input type="range" name="youtube_music.default_volume" id="youtube_music.default_volume"
+                           value="{{ settings.youtube_music.default_volume }}" min="0" max="100" step="5"
+                           oninput="document.getElementById('ytm-vol-val').textContent=this.value+'%'"
+                           style="flex:1">
+                    <span id="ytm-vol-val" class="slider-value">{{ settings.youtube_music.default_volume }}%</span>
+                </div>
+                <span class="field-desc">Playback volume level.</span>
             </div>
             <div class="checkbox-field">
                 <label for="youtube_music.auto_radio">
@@ -396,13 +441,7 @@
                            {% if settings.youtube_music.auto_radio %}checked{% endif %}>
                     Auto-Play Radio
                 </label>
-                <span class="field-desc">Automatically queue similar songs when a track finishes.</span>
-            </div>
-            <div>
-                <label for="youtube_music.default_volume">Default Volume</label>
-                <input type="number" name="youtube_music.default_volume" id="youtube_music.default_volume"
-                       value="{{ settings.youtube_music.default_volume }}" min="0" max="100">
-                <span class="field-desc">Playback volume level (0-100).</span>
+                <span class="field-desc">Queue similar songs when a track finishes.</span>
             </div>
         </div>
         <button type="button" class="advanced-toggle" onclick="toggleAdvanced(this, 'ytmusic-adv')">Show advanced</button>
@@ -414,10 +453,16 @@
                 <span class="field-desc">How many results to show when searching.</span>
             </div>
             <div>
+                <label for="youtube_music.max_history">Max History</label>
+                <input type="number" name="youtube_music.max_history" id="youtube_music.max_history"
+                       value="{{ settings.youtube_music.max_history }}">
+                <span class="field-desc">Maximum songs to keep in listen history.</span>
+            </div>
+            <div>
                 <label for="youtube_music.auth_file">Auth File</label>
                 <input type="text" name="youtube_music.auth_file" id="youtube_music.auth_file"
                        value="{{ settings.youtube_music.auth_file }}">
-                <span class="field-desc">Path to YouTube Music authentication file.</span>
+                <span class="field-desc">Path to authentication file.</span>
             </div>
             <div>
                 <label for="youtube_music.history_file">History File</label>
@@ -425,11 +470,28 @@
                        value="{{ settings.youtube_music.history_file }}">
                 <span class="field-desc">Path to listen history storage.</span>
             </div>
+        </div>
+    </div>
+
+    {# ── Weather ─────────────────────────────────────────────────────── #}
+    <div class="settings-card">
+        <div class="settings-card-header">
+            <h3>Weather</h3>
+        </div>
+        <div class="settings-grid">
             <div>
-                <label for="youtube_music.max_history">Max History</label>
-                <input type="number" name="youtube_music.max_history" id="youtube_music.max_history"
-                       value="{{ settings.youtube_music.max_history }}">
-                <span class="field-desc">Maximum number of songs to keep in listen history.</span>
+                <label for="weather.default_location">Your Location</label>
+                <input type="text" name="weather.default_location" id="weather.default_location"
+                       value="{{ settings.weather.default_location }}"
+                       placeholder="e.g. Akron, OH">
+                <span class="field-desc">Override auto-detected location. Leave empty to use IP geolocation.</span>
+            </div>
+            <div>
+                <label for="weather.api_key">OpenWeatherMap API Key</label>
+                <input type="text" name="weather.api_key" id="weather.api_key"
+                       value="{{ settings.weather.api_key }}"
+                       placeholder="Optional — uses free backup if empty">
+                <span class="field-desc">Free API key from <a href="https://openweathermap.org/api" target="_blank">openweathermap.org</a>. Provides better location accuracy.</span>
             </div>
         </div>
     </div>
@@ -440,7 +502,7 @@
             <h3>Notes &amp; Reminders</h3>
         </div>
         <div class="settings-grid">
-            <div class="checkbox-field">
+            <div class="field-full checkbox-field">
                 <label for="notes.enabled">
                     <input type="checkbox" name="notes.enabled" id="notes.enabled"
                            {% if settings.notes.enabled %}checked{% endif %}>
@@ -452,7 +514,7 @@
                 <label for="notes.max_notes">Max Notes</label>
                 <input type="number" name="notes.max_notes" id="notes.max_notes"
                        value="{{ settings.notes.max_notes }}">
-                <span class="field-desc">Maximum number of notes to store.</span>
+                <span class="field-desc">Maximum number of notes to store. 0 = unlimited.</span>
             </div>
         </div>
         <button type="button" class="advanced-toggle" onclick="toggleAdvanced(this, 'notes-adv')">Show advanced</button>
@@ -472,7 +534,7 @@
             <h3>Local Calendar</h3>
         </div>
         <div class="settings-grid">
-            <div class="checkbox-field">
+            <div class="field-full checkbox-field">
                 <label for="local_calendar.enabled">
                     <input type="checkbox" name="local_calendar.enabled" id="local_calendar.enabled"
                            {% if settings.local_calendar.enabled %}checked{% endif %}>
@@ -500,11 +562,24 @@
         <div class="settings-grid">
             <div class="field-full">
                 <span class="field-desc">
-                    Manage Google accounts for Calendar, Gmail, and YouTube Music.<br>
-                    To add or re-authenticate accounts, run: <code>python mcp_tools/google_auth/setup_auth.py</code>
+                    Manage Google accounts for Calendar, Gmail, and YouTube Music.
                 </span>
             </div>
         </div>
+
+        <div class="link-account-row">
+            <input type="text" id="link-account-label" placeholder="Account label (e.g. personal)"
+                   pattern="[a-zA-Z0-9_-]+" maxlength="32">
+            <a id="link-account-btn" class="link-account-btn" href="#">Link Account</a>
+        </div>
+        {% if not has_google_credentials %}
+        <div class="credentials-callout">
+            Before linking, you need a Google OAuth credentials file. Download one from
+            <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console</a>
+            and place it at <code>{{ settings.google_auth.credentials_file }}</code>.
+        </div>
+        {% endif %}
+
         <button type="button" class="advanced-toggle" onclick="toggleAdvanced(this, 'gauth-adv')">Show advanced</button>
         <div class="advanced-fields" id="gauth-adv">
             <div class="settings-grid">
@@ -520,7 +595,10 @@
             {% for label, acct in settings.google_auth.accounts.items() %}
             <div class="google-account-card" data-label="{{ label }}">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
-                    <strong>{{ label }}</strong>
+                    <div style="display:flex; align-items:center; gap:0.5rem;">
+                        <span class="status-dot {% if acct_status.get(label) %}status-dot-ok{% else %}status-dot-err{% endif %}"></span>
+                        <strong>{{ label }}</strong>
+                    </div>
                     <span class="gacct-email" data-label="{{ label }}" style="font-size:0.85em; opacity:0.7;">{{ acct.email }}</span>
                 </div>
                 <div class="settings-grid">
@@ -573,7 +651,7 @@
                             <label>Token File</label>
                             <input type="text" class="gacct-token" data-label="{{ label }}"
                                    value="{{ acct.token_file }}" readonly>
-                            <span class="field-desc">Managed by setup script.</span>
+                            <span class="field-desc">Managed automatically when linking accounts.</span>
                         </div>
                     </div>
                     <button type="button" class="remove-account-btn" data-label="{{ label }}"
@@ -583,7 +661,7 @@
                 </div>
             </div>
             {% else %}
-            <p style="padding:0.5rem 1rem; opacity:0.7;">No Google accounts configured. Run the setup script to add one.</p>
+            <p style="padding:0.5rem 1rem; opacity:0.7;">No Google accounts linked yet.</p>
             {% endfor %}
         </div>
     </div>
@@ -594,7 +672,7 @@
             <h3>Chat</h3>
         </div>
         <div class="settings-grid">
-            <div class="checkbox-field">
+            <div class="field-full checkbox-field">
                 <label for="chat.save_conversations">
                     <input type="checkbox" name="chat.save_conversations" id="chat.save_conversations"
                            {% if settings.chat.save_conversations %}checked{% endif %}>
@@ -650,6 +728,7 @@
         </div>
     </div>
 
+    <div id="toast-container"></div>
     <button type="button" id="save-btn">Save Settings</button>
 </form>
 
@@ -662,6 +741,188 @@ function toggleAdvanced(btn, id) {
     const open = el.classList.toggle('open');
     btn.textContent = open ? 'Hide advanced' : 'Show advanced';
 }
+
+/* ── Toast notifications ─────────────────────────────────────────────── */
+
+function showToast(message, type) {
+    const container = document.getElementById('toast-container');
+    const toast = document.createElement('div');
+    toast.className = 'toast toast-' + (type || 'success');
+    toast.textContent = message;
+    container.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add('toast-visible'));
+    setTimeout(() => {
+        toast.classList.remove('toast-visible');
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
+}
+
+/* ── Handle OAuth redirect query params ──────────────────────────────── */
+
+(function() {
+    const params = new URLSearchParams(window.location.search);
+    const linked = params.get('linked');
+    const error = params.get('error');
+    if (linked) {
+        showToast('Account "' + linked + '" linked successfully!', 'success');
+        history.replaceState(null, '', '/settings');
+    } else if (error) {
+        if (error === 'no_credentials') {
+            showToast('Missing credentials.json — see Google Accounts section for setup instructions.', 'error');
+        } else {
+            showToast(error, 'error');
+        }
+        history.replaceState(null, '', '/settings');
+    }
+})();
+
+/* ── Link Account button ────────────────────────────────────────────── */
+
+(function() {
+    const btn = document.getElementById('link-account-btn');
+    const input = document.getElementById('link-account-label');
+    if (!btn || !input) return;
+
+    btn.addEventListener('click', function(e) {
+        e.preventDefault();
+        const label = input.value.trim();
+        if (!label) {
+            showToast('Enter an account label first (e.g. "personal").', 'error');
+            input.focus();
+            return;
+        }
+        if (!/^[a-zA-Z0-9_-]+$/.test(label)) {
+            showToast('Label can only contain letters, numbers, hyphens, and underscores.', 'error');
+            input.focus();
+            return;
+        }
+
+        /* Open Google auth in a new tab (Desktop app creds redirect to localhost) */
+        const authUrl = '/auth/google/start?label=' + encodeURIComponent(label);
+        window.open(authUrl, '_blank');
+
+        /* Replace link-account row with paste-URL fallback UI */
+        const row = document.querySelector('.link-account-row');
+        row.innerHTML =
+            '<div class="oauth-pending">' +
+                '<p><strong>Authorizing with Google\u2026</strong></p>' +
+                '<p class="field-desc">A new tab opened for Google sign-in. After you authorize:</p>' +
+                '<ul class="field-desc" style="margin:0.5rem 0;padding-left:1.5rem;">' +
+                    '<li>If you were redirected back automatically, just <a href="/settings" style="color:var(--claw-accent)">refresh this page</a>.</li>' +
+                    '<li>If the redirect failed (page didn\u2019t load), copy the URL from the address bar and paste it below:</li>' +
+                '</ul>' +
+                '<div style="display:flex;gap:0.5rem;align-items:center;">' +
+                    '<input type="text" id="oauth-paste-url" placeholder="Paste redirect URL here\u2026" style="flex:1;width:auto !important;">' +
+                    '<button type="button" id="oauth-complete-btn" class="link-account-btn" style="flex-shrink:0;">Complete</button>' +
+                '</div>' +
+                '<button type="button" id="oauth-cancel-btn" style="margin-top:0.5rem;background:none;border:none;color:var(--claw-accent);cursor:pointer;font-size:0.85em;padding:0;">Cancel</button>' +
+            '</div>';
+
+        /* Poll for completion every 3s (handles the localhost redirect case) */
+        let pollId = setInterval(async () => {
+            try {
+                const r = await fetch('/api/settings');
+                const cfg = await r.json();
+                if (cfg.google_auth && cfg.google_auth.accounts && cfg.google_auth.accounts[label]) {
+                    clearInterval(pollId);
+                    showToast('Account "' + label + '" linked successfully!', 'success');
+                    setTimeout(() => window.location.reload(), 800);
+                }
+            } catch(_) {}
+        }, 3000);
+
+        /* Paste-URL completion */
+        document.getElementById('oauth-complete-btn').addEventListener('click', async function() {
+            const url = document.getElementById('oauth-paste-url').value.trim();
+            if (!url) { showToast('Paste the redirect URL from the new tab.', 'error'); return; }
+            try {
+                const resp = await fetch('/api/auth/google/complete', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({url: url}),
+                });
+                const data = await resp.json();
+                if (resp.ok) {
+                    clearInterval(pollId);
+                    showToast('Account "' + (data.label || label) + '" linked successfully!', 'success');
+                    setTimeout(() => window.location.reload(), 800);
+                } else {
+                    showToast(data.error || 'Failed to complete linking.', 'error');
+                }
+            } catch(err) {
+                showToast('Network error. Please try again.', 'error');
+            }
+        });
+
+        /* Enter key in paste input */
+        document.getElementById('oauth-paste-url').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') { e.preventDefault(); document.getElementById('oauth-complete-btn').click(); }
+        });
+
+        /* Cancel */
+        document.getElementById('oauth-cancel-btn').addEventListener('click', function() {
+            clearInterval(pollId);
+            window.location.reload();
+        });
+    });
+
+    input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            btn.click();
+        }
+    });
+})();
+
+/* ── Populate audio device dropdown ──────────────────────────────────── */
+
+const currentDeviceIndex = {{ settings.audio.device_index | tojson }};
+
+fetch('/api/audio/devices')
+    .then(r => r.json())
+    .then(data => {
+        const sel = document.getElementById('audio.device_index');
+        if (data.error || !data.devices.length) return;
+        data.devices.forEach(d => {
+            const opt = document.createElement('option');
+            opt.value = d.index;
+            opt.textContent = d.name + ' (' + d.channels + 'ch, ' + d.sample_rate + 'Hz)';
+            if (currentDeviceIndex !== null && d.index === currentDeviceIndex) opt.selected = true;
+            sel.appendChild(opt);
+        });
+    })
+    .catch(() => {});
+
+/* ── Populate Ollama model dropdown ──────────────────────────────────── */
+
+const currentModel = {{ settings.llm.model | tojson }};
+
+fetch('/api/ollama/models')
+    .then(r => r.json())
+    .then(data => {
+        const sel = document.getElementById('llm.model');
+        if (!data.models || !data.models.length) return;
+        sel.innerHTML = '';
+        let found = false;
+        data.models.forEach(m => {
+            const opt = document.createElement('option');
+            opt.value = m.name;
+            const sizeGB = m.size ? (m.size / 1e9).toFixed(1) + 'GB' : '';
+            const paramSize = m.parameter_size || '';
+            const extra = [paramSize, sizeGB].filter(Boolean).join(', ');
+            opt.textContent = m.name + (extra ? ' (' + extra + ')' : '');
+            if (m.name === currentModel) { opt.selected = true; found = true; }
+            sel.appendChild(opt);
+        });
+        if (!found) {
+            const opt = document.createElement('option');
+            opt.value = currentModel;
+            opt.textContent = currentModel + ' (not found)';
+            opt.selected = true;
+            sel.prepend(opt);
+        }
+    })
+    .catch(() => {});
 
 /* ── Wake word model list (dynamic) ─────────────────────────────────── */
 
@@ -711,7 +972,15 @@ document.querySelectorAll('.remove-account-btn').forEach(btn => {
         if (!confirm('Remove Google account "' + label + '"?')) return;
         fetch('/api/google-accounts/' + encodeURIComponent(label), { method: 'DELETE' })
             .then(r => r.json())
-            .then(d => { if (d.status === 'ok') location.reload(); });
+            .then(d => {
+                if (d.status === 'ok') {
+                    showToast('Account "' + label + '" removed', 'success');
+                    this.closest('.google-account-card').remove();
+                } else {
+                    showToast('Failed to remove account', 'error');
+                }
+            })
+            .catch(() => showToast('Failed to remove account', 'error'));
     });
 });
 
@@ -739,8 +1008,15 @@ document.getElementById('save-btn').addEventListener('click', function(e) {
             data[section][key] = el.checked;
         } else if (el.type === 'number' || el.type === 'range') {
             if (el.value !== '') data[section][key] = Number(el.value);
+        } else if (el.tagName === 'SELECT') {
+            /* device_index: empty string → null, otherwise → Number */
+            if (key === 'device_index') {
+                data[section][key] = el.value === '' ? null : Number(el.value);
+            } else {
+                data[section][key] = el.value;
+            }
         } else {
-            data[section][key] = el.value || null;
+            data[section][key] = el.value;
         }
     });
 
@@ -786,13 +1062,34 @@ document.getElementById('save-btn').addEventListener('click', function(e) {
     if (!data.google_auth) data.google_auth = {};
     data.google_auth.accounts = accounts;
 
+    const btn = this;
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+
     fetch('/api/settings', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(data)
     })
-    .then(r => r.json())
-    .then(d => { if (d.status === 'ok') location.reload(); });
+    .then(r => {
+        if (!r.ok && r.headers.get('content-type')?.includes('application/json')) {
+            return r.json().then(d => { throw new Error(d.error || 'Server error'); });
+        }
+        if (!r.ok) throw new Error('Server error (' + r.status + ')');
+        return r.json();
+    })
+    .then(d => {
+        if (d.status === 'ok') {
+            showToast('Settings saved successfully', 'success');
+        } else {
+            showToast('Failed to save: ' + (d.error || 'unknown error'), 'error');
+        }
+    })
+    .catch(err => showToast('Failed to save settings: ' + err.message, 'error'))
+    .finally(() => {
+        btn.disabled = false;
+        btn.textContent = 'Save Settings';
+    });
 });
 </script>
 {% endblock %}
