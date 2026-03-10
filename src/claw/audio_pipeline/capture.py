@@ -22,6 +22,13 @@ class AudioCapture:
     asyncio event loop.
     """
 
+    # AGC constants
+    _AGC_TARGET_RMS = 0.08
+    _AGC_ATTACK = 0.3
+    _AGC_RELEASE = 0.05
+    _AGC_MIN_GAIN = 0.02
+    _AGC_MAX_GAIN = 15.0
+
     def __init__(self) -> None:
         cfg = get_settings().audio
         self.sample_rate = cfg.sample_rate
@@ -35,10 +42,49 @@ class AudioCapture:
         self._buffer: deque[np.ndarray] = deque(maxlen=self.sample_rate * self.max_record_seconds // self.block_size)
         self._stream: sd.InputStream | None = None
 
+        # AGC state
+        self._agc_gain = 1.0
+
+        # High-pass filter state (initialized in start())
+        self._hp_sos: np.ndarray | None = None
+        self._hp_zi: np.ndarray | None = None
+
+    def _condition_audio(self, chunk: np.ndarray) -> np.ndarray:
+        """Apply audio conditioning: high-pass filter, AGC, soft clipping."""
+        # 1. High-pass filter (80Hz) — removes rumble, HVAC hum, DC offset
+        if self._hp_sos is not None:
+            from scipy.signal import sosfilt
+
+            chunk, self._hp_zi = sosfilt(self._hp_sos, chunk, zi=self._hp_zi)
+            chunk = chunk.astype(np.float32)
+        else:
+            # Fallback: simple DC removal
+            chunk = chunk - np.mean(chunk)
+
+        # 2. AGC — normalize loudness to target RMS
+        rms = float(np.sqrt(np.mean(chunk**2)))
+        if rms > 1e-6:
+            desired_gain = self._AGC_TARGET_RMS / rms
+            desired_gain = np.clip(desired_gain, self._AGC_MIN_GAIN, self._AGC_MAX_GAIN)
+            # Asymmetric smoothing: fast attack (reduce gain quickly), slow release
+            if desired_gain < self._agc_gain:
+                alpha = self._AGC_ATTACK
+            else:
+                alpha = self._AGC_RELEASE
+            self._agc_gain += alpha * (desired_gain - self._agc_gain)
+        chunk = chunk * self._agc_gain
+
+        # 3. Soft clipping — compress peaks that exceed ±1.0
+        chunk = np.tanh(chunk)
+
+        return chunk
+
     def _callback(self, indata: np.ndarray, frames: int, time_info: object, status: sd.CallbackFlags) -> None:
         if status:
             log.warning("Audio callback status: %s", status)
-        self._buffer.append(indata[:, 0].copy())
+        chunk = indata[:, 0].copy()
+        chunk = self._condition_audio(chunk)
+        self._buffer.append(chunk)
 
     def start(self) -> None:
         """Open the audio input stream.
@@ -60,6 +106,17 @@ class AudioCapture:
             else:
                 raise
         self._stream.start()
+
+        # Initialize high-pass filter coefficients
+        try:
+            from scipy.signal import butter, sosfilt_zi
+
+            self._hp_sos = butter(2, 80, btype="high", fs=self.sample_rate, output="sos")
+            self._hp_zi = sosfilt_zi(self._hp_sos)
+        except ImportError:
+            log.info("scipy not available, using DC removal instead of high-pass filter")
+            self._hp_sos = None
+
         log.info(
             "Audio capture started (device=%s, rate=%d, block=%d)",
             device if device is not None else "default",

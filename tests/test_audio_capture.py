@@ -116,6 +116,61 @@ class TestCallback:
         assert capture._buffer[0][0] == 0.0
 
 
+class TestAudioConditioning:
+    """Test the audio conditioning pipeline (AGC, high-pass, soft clipping)."""
+
+    def test_agc_reduces_loud_audio(self, capture):
+        """Loud audio (RMS ~0.5) should be reduced toward target RMS (0.08)."""
+        t = np.linspace(0, 0.08, 1280, dtype=np.float32)
+        loud_chunk = (0.7 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+        result = None
+        for _ in range(20):
+            result = capture._condition_audio(loud_chunk.copy())
+        out_rms = float(np.sqrt(np.mean(result**2)))
+        # After convergence, output RMS should be much closer to 0.08 than 0.5
+        assert out_rms < 0.3, f"AGC failed to reduce loud audio: RMS {out_rms}"
+
+    def test_agc_boosts_quiet_audio(self, capture):
+        """Quiet audio (RMS ~0.001) should be boosted toward target RMS."""
+        # Use a sine wave so DC removal doesn't zero it out
+        t = np.linspace(0, 0.08, 1280, dtype=np.float32)
+        quiet_chunk = (0.001 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+        result = None
+        for _ in range(50):
+            result = capture._condition_audio(quiet_chunk.copy())
+        out_rms = float(np.sqrt(np.mean(result**2)))
+        # Should be boosted above the input level
+        assert out_rms > 0.001, f"AGC failed to boost quiet audio: RMS {out_rms}"
+
+    def test_soft_clip_prevents_clipping(self, capture):
+        """Values exceeding ±1.0 should be compressed into [-1, 1] by tanh."""
+        # Create a chunk with extreme values
+        hot_chunk = np.full(1280, 3.0, dtype=np.float32)
+        result = capture._condition_audio(hot_chunk)
+        assert np.all(result >= -1.0) and np.all(result <= 1.0), (
+            f"Soft clipping failed: min={result.min()}, max={result.max()}"
+        )
+
+    def test_highpass_removes_dc(self, capture):
+        """A chunk with DC offset should have near-zero mean after conditioning."""
+        # Even without scipy, the DC removal fallback should work
+        dc_chunk = np.full(1280, 0.5, dtype=np.float32)
+        result = capture._condition_audio(dc_chunk)
+        # tanh preserves sign, so check the input to tanh would be near-zero mean
+        # With DC removal, mean of chunk before AGC should be ~0
+        # After AGC + tanh, the absolute mean should be small
+        assert abs(float(np.mean(result))) < 0.1, (
+            f"DC removal failed: mean={np.mean(result)}"
+        )
+
+    def test_conditioning_preserves_silence(self, capture):
+        """Near-silence should stay near-silence — AGC shouldn't amplify noise wildly."""
+        silence = np.zeros(1280, dtype=np.float32)
+        result = capture._condition_audio(silence)
+        out_rms = float(np.sqrt(np.mean(result**2)))
+        assert out_rms < 0.01, f"Silence was amplified: RMS {out_rms}"
+
+
 class TestRecordUntilSilence:
     """Test the async recording loop.
 
