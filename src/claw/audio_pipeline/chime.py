@@ -43,7 +43,7 @@ def play_listening_chime() -> None:
 
         samples *= cfg.chime_volume
 
-        sd.play(samples, samplerate=_SAMPLE_RATE)
+        sd.play(samples, samplerate=_SAMPLE_RATE, device=cfg.output_device_index)
         sd.wait()
         log.info("Chime playback complete")
     except Exception:

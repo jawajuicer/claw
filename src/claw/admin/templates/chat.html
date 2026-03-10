@@ -457,7 +457,7 @@ async function deleteConversation(id) {
 
 const modelSelect = document.getElementById('model-select');
 
-fetch('/api/ollama/models')
+fetch('/api/models')
     .then(r => r.json())
     .then(data => {
         if (!data.models || !data.models.length) return;

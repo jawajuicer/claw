@@ -20,6 +20,13 @@
                 <span class="field-desc">Which microphone to use. Leave as System Default for auto-detect.</span>
             </div>
             <div>
+                <label for="audio.output_device_index">Audio Output</label>
+                <select name="audio.output_device_index" id="audio.output_device_index">
+                    <option value="">System Default</option>
+                </select>
+                <span class="field-desc">Speaker/output device for chime and TTS. Leave as System Default for auto-detect.</span>
+            </div>
+            <div>
                 <label for="audio.silence_duration">Silence Timeout</label>
                 <input type="number" name="audio.silence_duration" id="audio.silence_duration"
                        value="{{ settings.audio.silence_duration }}" step="any">
@@ -257,6 +264,56 @@
         </div>
     </div>
 
+    {# ── Compute Backend ─────────────────────────────────────────────── #}
+    <div class="settings-card" id="compute-card">
+        <div class="settings-card-header">
+            <h3>Compute Backend</h3>
+        </div>
+
+        <div id="compute-hw-status" style="margin-bottom:1rem;">
+            <span class="field-desc">Detecting hardware...</span>
+        </div>
+
+        <div class="settings-grid">
+            <div>
+                <label for="compute.backend">Backend</label>
+                <select name="compute.backend" id="compute.backend">
+                    <option value="cpu" {% if settings.compute.backend == 'cpu' %}selected{% endif %}>CPU</option>
+                    <option value="cuda" {% if settings.compute.backend == 'cuda' %}selected{% endif %}>NVIDIA GPU (CUDA)</option>
+                    <option value="rocm" {% if settings.compute.backend == 'rocm' %}selected{% endif %}>AMD GPU (ROCm)</option>
+                    <option value="vulkan" {% if settings.compute.backend == 'vulkan' %}selected{% endif %}>Vulkan / iGPU</option>
+                </select>
+                <span class="field-desc">Which hardware to use for AI inference. Switching rebuilds llama.cpp.</span>
+            </div>
+            <div>
+                <label for="compute.gpu_layers">GPU Layers</label>
+                <input type="number" name="compute.gpu_layers" id="compute.gpu_layers"
+                       value="{{ settings.compute.gpu_layers }}" min="0" max="999">
+                <span class="field-desc">Number of model layers to offload to GPU. 99 = all layers. 0 = CPU only.</span>
+            </div>
+        </div>
+
+        <div style="margin-top:1rem;">
+            <button type="button" id="compute-switch-btn" class="link-account-btn" style="display:none;">
+                Switch Backend
+            </button>
+        </div>
+
+        {# Progress bar — hidden until build starts #}
+        <div id="compute-progress" style="display:none; margin-top:1rem;">
+            <div style="display:flex; justify-content:space-between; margin-bottom:0.3rem;">
+                <span id="compute-phase" class="field-desc">Preparing...</span>
+                <span id="compute-percent" class="field-desc">0%</span>
+            </div>
+            <div style="height:6px; background:#2a2a4a; border-radius:3px; overflow:hidden;">
+                <div id="compute-progress-bar"
+                     style="height:100%; width:0%; border-radius:3px; transition:width 0.3s ease, background 0.3s ease; background:var(--claw-green);">
+                </div>
+            </div>
+            <pre id="compute-log" class="log-viewer" style="max-height:150px; margin-top:0.5rem; font-size:0.75rem;"></pre>
+        </div>
+    </div>
+
     {# ── AI Model ────────────────────────────────────────────────────── #}
     <div class="settings-card">
         <div class="settings-card-header">
@@ -269,7 +326,7 @@
                 <select name="llm.model" id="llm.model">
                     <option value="{{ settings.llm.model }}" selected>{{ settings.llm.model }}</option>
                 </select>
-                <span class="field-desc">Which AI model to use. Lists models available in Ollama.</span>
+                <span class="field-desc">Which AI model to use.</span>
             </div>
             <div>
                 <label for="llm.temperature">Creativity</label>
@@ -492,6 +549,150 @@
                        value="{{ settings.weather.api_key }}"
                        placeholder="Optional — uses free backup if empty">
                 <span class="field-desc">Free API key from <a href="https://openweathermap.org/api" target="_blank">openweathermap.org</a>. Provides better location accuracy.</span>
+            </div>
+        </div>
+    </div>
+
+    {# ── Gemini API ──────────────────────────────────────────────────── #}
+    <div class="settings-card">
+        <div class="settings-card-header">
+            <h3>Gemini API</h3>
+            <span class="hot-reload-badge">hot-reload</span>
+        </div>
+        <div class="settings-grid">
+            <div class="field-full checkbox-field">
+                <label for="gemini.enabled">
+                    <input type="checkbox" name="gemini.enabled" id="gemini.enabled"
+                           {% if settings.gemini.enabled %}checked{% endif %}>
+                    Enable Gemini
+                </label>
+                <span class="field-desc">Use Google Gemini for web search, document analysis, image understanding, and complex reasoning.</span>
+            </div>
+            <div class="field-full">
+                <label>API Key</label>
+                <div style="display:flex;gap:0.5rem;align-items:center;">
+                    <input type="password" id="gemini-api-key-input"
+                           placeholder="{% if gemini_key_set %}{{ gemini_key_masked }}{% else %}Paste your Gemini API key{% endif %}"
+                           style="flex:1;">
+                    <button type="button" id="gemini-key-save-btn" class="btn-sm">
+                        {% if gemini_key_set %}Update{% else %}Save Key{% endif %}
+                    </button>
+                    {% if gemini_key_set %}
+                    <button type="button" id="gemini-key-remove-btn" class="btn-sm btn-danger">Remove</button>
+                    {% endif %}
+                </div>
+                <span class="field-desc">
+                    Get a free API key from <a href="https://aistudio.google.com/apikey" target="_blank">Google AI Studio</a>.
+                    Key is encrypted at rest — never stored in config files.
+                    {% if gemini_key_set %}<strong>Status: Set ({{ gemini_key_masked }})</strong>{% else %}<strong>Status: Not set</strong>{% endif %}
+                </span>
+            </div>
+        </div>
+        <div class="settings-grid" style="margin-top:0.5rem;">
+            <div class="field-full"><strong>Capabilities</strong></div>
+            <div class="checkbox-field">
+                <label for="gemini.web_search">
+                    <input type="checkbox" name="gemini.web_search" id="gemini.web_search"
+                           {% if settings.gemini.web_search %}checked{% endif %}>
+                    Web Search
+                </label>
+                <span class="field-desc">Search the web via Google grounding.</span>
+            </div>
+            <div class="checkbox-field">
+                <label for="gemini.document_analysis">
+                    <input type="checkbox" name="gemini.document_analysis" id="gemini.document_analysis"
+                           {% if settings.gemini.document_analysis %}checked{% endif %}>
+                    Document Analysis
+                </label>
+                <span class="field-desc">Summarize and analyze large documents.</span>
+            </div>
+            <div class="checkbox-field">
+                <label for="gemini.image_understanding">
+                    <input type="checkbox" name="gemini.image_understanding" id="gemini.image_understanding"
+                           {% if settings.gemini.image_understanding %}checked{% endif %}>
+                    Image Understanding
+                </label>
+                <span class="field-desc">Describe and analyze images.</span>
+            </div>
+            <div class="checkbox-field">
+                <label for="gemini.reasoning_fallback">
+                    <input type="checkbox" name="gemini.reasoning_fallback" id="gemini.reasoning_fallback"
+                           {% if settings.gemini.reasoning_fallback %}checked{% endif %}>
+                    Complex Reasoning
+                </label>
+                <span class="field-desc">Escalate hard questions to Gemini Pro.</span>
+            </div>
+            <div>
+                <label for="gemini.escalation_mode">Escalation Mode</label>
+                <select name="gemini.escalation_mode" id="gemini.escalation_mode">
+                    <option value="ask" {% if settings.gemini.escalation_mode == 'ask' %}selected{% endif %}>Ask me first (Recommended)</option>
+                    <option value="auto" {% if settings.gemini.escalation_mode == 'auto' %}selected{% endif %}>Auto-escalate silently</option>
+                    <option value="off" {% if settings.gemini.escalation_mode == 'off' %}selected{% endif %}>Never escalate</option>
+                </select>
+                <span class="field-desc">When the local LLM isn't confident, should Claw offer to ask Gemini?</span>
+            </div>
+        </div>
+        <button type="button" class="advanced-toggle" onclick="toggleAdvanced(this, 'gemini-adv')">Show advanced</button>
+        <div class="advanced-fields" id="gemini-adv">
+            <div>
+                <label for="gemini.model">Flash Model</label>
+                <input type="text" name="gemini.model" id="gemini.model"
+                       value="{{ settings.gemini.model }}">
+                <span class="field-desc">Model for web search, documents, and images.</span>
+            </div>
+            <div>
+                <label for="gemini.pro_model">Pro Model</label>
+                <input type="text" name="gemini.pro_model" id="gemini.pro_model"
+                       value="{{ settings.gemini.pro_model }}">
+                <span class="field-desc">Model for complex reasoning tasks.</span>
+            </div>
+            <div>
+                <label for="gemini.temperature">Temperature</label>
+                <input type="number" name="gemini.temperature" id="gemini.temperature"
+                       value="{{ settings.gemini.temperature }}" step="0.1" min="0" max="2">
+            </div>
+            <div>
+                <label for="gemini.max_output_tokens">Max Output Tokens</label>
+                <input type="number" name="gemini.max_output_tokens" id="gemini.max_output_tokens"
+                       value="{{ settings.gemini.max_output_tokens }}">
+            </div>
+            <div>
+                <label for="gemini.daily_request_limit">Daily Request Limit</label>
+                <input type="number" name="gemini.daily_request_limit" id="gemini.daily_request_limit"
+                       value="{{ settings.gemini.daily_request_limit }}">
+                <span class="field-desc">Self-imposed daily limit on API requests.</span>
+            </div>
+            <div>
+                <label for="gemini.grounding_daily_limit">Grounding Daily Limit</label>
+                <input type="number" name="gemini.grounding_daily_limit" id="gemini.grounding_daily_limit"
+                       value="{{ settings.gemini.grounding_daily_limit }}">
+                <span class="field-desc">Daily limit for web search (grounding) requests.</span>
+            </div>
+            <div class="checkbox-field">
+                <label for="gemini.log_requests">
+                    <input type="checkbox" name="gemini.log_requests" id="gemini.log_requests"
+                           {% if settings.gemini.log_requests %}checked{% endif %}>
+                    Log API Calls
+                </label>
+                <span class="field-desc">Record all Gemini API calls for transparency.</span>
+            </div>
+        </div>
+
+        {# ── Inline API Log Viewer ── #}
+        <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid var(--pico-muted-border-color);">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;">
+                <strong>API Call Log</strong>
+                <div style="display:flex;gap:0.5rem;">
+                    <button type="button" id="gemini-log-refresh-btn" class="btn-sm">Refresh</button>
+                    <button type="button" id="gemini-log-wipe-btn" class="btn-sm btn-danger">Wipe Logs</button>
+                </div>
+            </div>
+            <div id="gemini-usage-summary" style="font-size:0.85rem;margin-bottom:0.5rem;color:var(--pico-muted-color);">
+                Loading usage...
+            </div>
+            <div id="gemini-log-viewer"
+                 style="max-height:300px;overflow-y:auto;font-size:0.8rem;background:var(--pico-card-background-color);border-radius:4px;padding:0.5rem;">
+                <em>Click Refresh to load logs.</em>
             </div>
         </div>
     </div>
@@ -893,11 +1094,30 @@ fetch('/api/audio/devices')
     })
     .catch(() => {});
 
-/* ── Populate Ollama model dropdown ──────────────────────────────────── */
+/* ── Populate audio output device dropdown ───────────────────────────── */
+
+const currentOutputDeviceIndex = {{ settings.audio.output_device_index | tojson }};
+
+fetch('/api/audio/devices/output')
+    .then(r => r.json())
+    .then(data => {
+        const sel = document.getElementById('audio.output_device_index');
+        if (data.error || !data.devices.length) return;
+        data.devices.forEach(d => {
+            const opt = document.createElement('option');
+            opt.value = d.index;
+            opt.textContent = d.name + ' (' + d.channels + 'ch, ' + d.sample_rate + 'Hz)';
+            if (currentOutputDeviceIndex !== null && d.index === currentOutputDeviceIndex) opt.selected = true;
+            sel.appendChild(opt);
+        });
+    })
+    .catch(() => {});
+
+/* ── Populate model dropdown ────────────────────────────────────────── */
 
 const currentModel = {{ settings.llm.model | tojson }};
 
-fetch('/api/ollama/models')
+fetch('/api/models')
     .then(r => r.json())
     .then(data => {
         const sel = document.getElementById('llm.model');
@@ -984,6 +1204,217 @@ document.querySelectorAll('.remove-account-btn').forEach(btn => {
     });
 });
 
+/* ── Gemini API key management ─────────────────────────────────────── */
+
+document.getElementById('gemini-key-save-btn')?.addEventListener('click', function() {
+    const input = document.getElementById('gemini-api-key-input');
+    const key = input.value.trim();
+    if (!key) { showToast('Please enter an API key', 'error'); return; }
+
+    this.disabled = true;
+    this.textContent = 'Testing...';
+
+    fetch('/api/gemini/key', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({key: key})
+    })
+    .then(r => r.json().then(d => ({ok: r.ok, data: d})))
+    .then(({ok, data}) => {
+        if (ok) {
+            showToast('Gemini API key saved and verified!', 'success');
+            input.value = '';
+            input.placeholder = data.masked;
+            this.textContent = 'Update';
+            // Add remove button if it doesn't exist
+            if (!document.getElementById('gemini-key-remove-btn')) {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.id = 'gemini-key-remove-btn';
+                btn.className = 'btn-sm btn-danger';
+                btn.textContent = 'Remove';
+                btn.addEventListener('click', geminiKeyRemove);
+                this.parentElement.appendChild(btn);
+            }
+        } else {
+            showToast(data.error || 'Failed to save key', 'error');
+        }
+    })
+    .catch(() => showToast('Failed to save API key', 'error'))
+    .finally(() => { this.disabled = false; if (this.textContent === 'Testing...') this.textContent = 'Save Key'; });
+});
+
+function geminiKeyRemove() {
+    if (!confirm('Remove Gemini API key? Gemini tools will stop working.')) return;
+    fetch('/api/gemini/key', {method: 'DELETE'})
+    .then(r => r.json())
+    .then(d => {
+        if (d.status === 'ok') {
+            showToast('Gemini API key removed', 'success');
+            document.getElementById('gemini-api-key-input').placeholder = 'Paste your Gemini API key';
+            document.getElementById('gemini-key-save-btn').textContent = 'Save Key';
+            document.getElementById('gemini-key-remove-btn')?.remove();
+        }
+    })
+    .catch(() => showToast('Failed to remove key', 'error'));
+}
+document.getElementById('gemini-key-remove-btn')?.addEventListener('click', geminiKeyRemove);
+
+/* ── Gemini log viewer ────────────────────────────────────────────── */
+
+function loadGeminiLogs() {
+    fetch('/api/gemini/logs')
+    .then(r => r.json())
+    .then(data => {
+        const viewer = document.getElementById('gemini-log-viewer');
+        const summary = document.getElementById('gemini-usage-summary');
+        const u = data.usage || {};
+        summary.textContent = `Today: ${u.requests_today || 0}/${u.daily_limit || 200} requests, ${u.grounding_today || 0}/${u.grounding_limit || 400} grounding`;
+
+        const entries = data.entries || [];
+        if (!entries.length) {
+            viewer.innerHTML = '<em>No API calls logged yet.</em>';
+            return;
+        }
+        viewer.innerHTML = entries.map(e => {
+            const ts = e.timestamp ? new Date(e.timestamp).toLocaleString() : '?';
+            const prompt = (e.prompt_preview || '').substring(0, 120);
+            const resp = (e.response_preview || '').substring(0, 120);
+            return `<div style="border-bottom:1px solid var(--pico-muted-border-color);padding:4px 0;"><strong>${ts}</strong> [${e.tool}] <em>${e.model}</em><br>Q: ${prompt}${e.prompt_preview?.length > 120 ? '...' : ''}<br>A: ${resp}${e.response_preview?.length > 120 ? '...' : ''}</div>`;
+        }).join('');
+    })
+    .catch(() => {
+        document.getElementById('gemini-log-viewer').innerHTML = '<em>Failed to load logs.</em>';
+    });
+}
+
+document.getElementById('gemini-log-refresh-btn')?.addEventListener('click', loadGeminiLogs);
+
+document.getElementById('gemini-log-wipe-btn')?.addEventListener('click', function() {
+    if (!confirm('Delete all Gemini API logs? This cannot be undone.')) return;
+    fetch('/api/gemini/logs', {method: 'DELETE'})
+    .then(r => r.json())
+    .then(d => {
+        if (d.status === 'ok') {
+            showToast(`Wiped ${d.files_deleted} log file(s)`, 'success');
+            loadGeminiLogs();
+        }
+    })
+    .catch(() => showToast('Failed to wipe logs', 'error'));
+});
+
+/* ── Compute backend hardware detection + switch ─────────────────────── */
+
+const currentBackend = {{ settings.compute.backend | tojson }};
+
+fetch('/api/compute/hardware')
+    .then(r => r.json())
+    .then(hw => {
+        const container = document.getElementById('compute-hw-status');
+        const sel = document.getElementById('compute.backend');
+        const lines = [];
+
+        const labels = {cpu: 'CPU', cuda: 'NVIDIA GPU (CUDA)', rocm: 'AMD GPU (ROCm)', vulkan: 'Vulkan / iGPU'};
+        for (const [key, info] of Object.entries(hw)) {
+            const dotClass = info.available ? 'status-dot-ok' : 'status-dot-err';
+            const name = info.name || labels[key] || key;
+            const extra = info.info ? ` — ${info.info}` : '';
+            const deps = info.available && !info.deps_installed ? ' <em>(deps not installed)</em>' : '';
+            lines.push(`<span class="status-dot ${dotClass}"></span> ${name}${extra}${deps}`);
+
+            /* Disable unavailable backends in dropdown */
+            const opt = sel.querySelector(`option[value="${key}"]`);
+            if (opt && !info.available && key !== 'cpu') {
+                opt.disabled = true;
+                opt.textContent += ' (not detected)';
+            }
+        }
+        container.innerHTML = lines.join('<br>');
+
+        /* Show switch button when backend selection differs from current */
+        sel.addEventListener('change', function() {
+            const btn = document.getElementById('compute-switch-btn');
+            btn.style.display = this.value !== currentBackend ? '' : 'none';
+        });
+    })
+    .catch(() => {
+        document.getElementById('compute-hw-status').innerHTML =
+            '<span class="field-desc">Hardware detection unavailable.</span>';
+    });
+
+document.getElementById('compute-switch-btn').addEventListener('click', function() {
+    const backend = document.getElementById('compute.backend').value;
+    if (!confirm(`Switch compute backend to ${backend}? This will rebuild llama.cpp and restart the inference server.`)) return;
+
+    this.disabled = true;
+    this.textContent = 'Switching...';
+
+    const progressDiv = document.getElementById('compute-progress');
+    const progressBar = document.getElementById('compute-progress-bar');
+    const phaseLabel = document.getElementById('compute-phase');
+    const percentLabel = document.getElementById('compute-percent');
+    const logPre = document.getElementById('compute-log');
+    progressDiv.style.display = '';
+    logPre.textContent = '';
+    progressBar.style.width = '0%';
+    progressBar.style.background = 'var(--claw-green)';
+
+    fetch('/api/compute/switch', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({backend: backend})
+    })
+    .then(r => {
+        if (!r.ok) return r.json().then(d => { throw new Error(d.error || 'Failed'); });
+        return r.json();
+    })
+    .then(() => {
+        /* Open SSE for progress */
+        const es = new EventSource('/api/compute/progress');
+
+        es.addEventListener('build_progress', function(e) {
+            const d = JSON.parse(e.data);
+            progressBar.style.width = d.percent + '%';
+            phaseLabel.textContent = d.phase;
+            percentLabel.textContent = d.percent + '%';
+            logPre.textContent += d.message + '\n';
+            logPre.scrollTop = logPre.scrollHeight;
+        });
+
+        es.addEventListener('build_complete', function(e) {
+            es.close();
+            const d = JSON.parse(e.data);
+            const ok = d.percent >= 100 || d.phase === 'done';
+            progressBar.style.width = '100%';
+            progressBar.style.background = ok ? 'var(--claw-green)' : 'var(--claw-accent)';
+            phaseLabel.textContent = ok ? 'Complete' : 'Failed';
+            percentLabel.textContent = ok ? '100%' : 'Error';
+
+            if (ok) {
+                showToast('Backend switched to ' + backend, 'success');
+                setTimeout(() => location.reload(), 1500);
+            } else {
+                showToast('Backend switch failed: ' + d.message, 'error');
+                document.getElementById('compute-switch-btn').disabled = false;
+                document.getElementById('compute-switch-btn').textContent = 'Switch Backend';
+            }
+        });
+
+        es.onerror = function() {
+            es.close();
+            progressBar.style.background = 'var(--claw-accent)';
+            phaseLabel.textContent = 'Connection lost';
+            document.getElementById('compute-switch-btn').disabled = false;
+            document.getElementById('compute-switch-btn').textContent = 'Switch Backend';
+        };
+    })
+    .catch(err => {
+        showToast('Switch failed: ' + err.message, 'error');
+        this.disabled = false;
+        this.textContent = 'Switch Backend';
+    });
+});
+
 /* ── Save handler ────────────────────────────────────────────────────── */
 
 document.getElementById('save-btn').addEventListener('click', function(e) {
@@ -1009,8 +1440,8 @@ document.getElementById('save-btn').addEventListener('click', function(e) {
         } else if (el.type === 'number' || el.type === 'range') {
             if (el.value !== '') data[section][key] = Number(el.value);
         } else if (el.tagName === 'SELECT') {
-            /* device_index: empty string → null, otherwise → Number */
-            if (key === 'device_index') {
+            /* device_index / output_device_index: empty string → null, otherwise → Number */
+            if (key === 'device_index' || key === 'output_device_index') {
                 data[section][key] = el.value === '' ? null : Number(el.value);
             } else {
                 data[section][key] = el.value;

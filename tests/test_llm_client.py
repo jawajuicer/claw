@@ -125,8 +125,8 @@ class TestConfigReload:
         # The reload method checks `cfg.base_url != str(self._client.base_url).rstrip("/")`.
         # We need to set the mock client's base_url to the OLD value so the comparison
         # detects a change.
-        llm_client._client.base_url = "http://localhost:11434/v1/"
-        settings.llm.base_url = "http://new-host:11434/v1"
+        llm_client._client.base_url = "http://localhost:8081/v1/"
+        settings.llm.base_url = "http://new-host:8081/v1"
         settings.llm.api_key = "new-key"
         settings.llm.timeout = 30
 
@@ -136,7 +136,7 @@ class TestConfigReload:
             llm_client._on_config_reload(settings)
             assert llm_client._client is new_client
             MockNewOAI.assert_called_once_with(
-                base_url="http://new-host:11434/v1",
+                base_url="http://new-host:8081/v1",
                 api_key="new-key",
                 timeout=30,
             )

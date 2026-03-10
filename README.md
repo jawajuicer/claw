@@ -6,7 +6,7 @@ A local-first voice AI agent with MCP tool calling. Privacy-first: zero cloud au
 
 - **Voice-activated** -- custom "Hey Claw" wake word with openWakeWord (ONNX)
 - **Local speech-to-text** -- faster-whisper for on-device transcription
-- **Local LLM** -- Ollama-backed inference via the OpenAI SDK (any model: qwen, llama, mistral, etc.)
+- **Local LLM** -- llama-swap + llama.cpp inference via the OpenAI SDK (any GGUF model: qwen, llama, mistral, etc.)
 - **Text-to-speech** -- Piper TTS (ONNX) with optional Fish Speech support
 - **MCP tool calling** -- extensible tool servers discovered automatically from `mcp_tools/`
 - **Conversational memory** -- ChromaDB vector store with automatic fact extraction
@@ -33,7 +33,7 @@ A local-first voice AI agent with MCP tool calling. Privacy-first: zero cloud au
     +----+----+ +----+----+ +---+----+ +----+---+ +---+--------+
          |           |          |           |          |
     sounddevice  OpenAI SDK  ChromaDB    stdio     piper-tts
-    openWakeWord   Ollama    sentence-  sessions   (or Fish
+    openWakeWord  llama.cpp  sentence-  sessions   (or Fish
     faster-whisper           transformers           Speech)
                                           |
                               +-----------+-----------+
@@ -54,7 +54,7 @@ A local-first voice AI agent with MCP tool calling. Privacy-first: zero cloud au
 1. **Wake word detection** -- sounddevice streams audio to openWakeWord, which listens for "Hey Claw" (or other configured wake words)
 2. **Audio capture** -- once triggered, records speech until silence is detected
 3. **Transcription** -- faster-whisper converts audio to text locally
-4. **Agent processing** -- the LLM (via Ollama) processes the query, optionally calling MCP tools in a bounded loop (max 5 iterations)
+4. **Agent processing** -- the LLM (via llama-swap/llama.cpp) processes the query, optionally calling MCP tools in a bounded loop (max 5 iterations)
 5. **Response** -- the answer is spoken via TTS and displayed in the admin panel
 6. **Memory** -- conversations are stored in ChromaDB; facts are extracted in the background
 
@@ -64,7 +64,7 @@ A local-first voice AI agent with MCP tool calling. Privacy-first: zero cloud au
 
 - Ubuntu 24.04 (or compatible Linux with PipeWire)
 - Python 3.12+
-- [Ollama](https://ollama.ai) installed and running
+- llama-swap + llama.cpp (installed by `install.sh`)
 - A USB microphone (or any PipeWire-compatible audio input)
 
 ### Install
@@ -86,10 +86,10 @@ cp .env.example .env
 # Edit .env or config.yaml with your preferences
 ```
 
-Pull an Ollama model:
+Download a model (GGUF format from Hugging Face):
 
 ```bash
-ollama pull qwen2.5:14b
+huggingface-cli download unsloth/Qwen2.5-14B-Instruct-GGUF --include "Qwen2.5-14B-Instruct-Q4_K_M.gguf" --local-dir ~/models
 ```
 
 ### Run
@@ -160,7 +160,7 @@ The Claw uses a layered configuration system with this priority (highest first):
 | `wake` | Wake word model paths, detection thresholds, inference framework |
 | `whisper` | STT model size, compute type, language |
 | `tts` | TTS engine (piper/fish_speech), voice model, speed, enable/disable |
-| `llm` | Ollama URL, model name, temperature, max tokens, context window, system prompt |
+| `llm` | LLM server URL, model name, temperature, max tokens, context window, system prompt |
 | `memory` | ChromaDB path, embedding model, result limits |
 | `mcp` | Tools directory, enabled servers, startup timeout |
 | `youtube_music` | Auth file, playback defaults, history |

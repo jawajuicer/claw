@@ -26,6 +26,7 @@ class TTSManager:
     def __init__(self) -> None:
         self._engine: TTSEngine | None = None
         self._speaking = False
+        self._output_device: int | None = get_settings().audio.output_device_index
         on_reload(self._on_config_reload)
 
     @property
@@ -89,11 +90,10 @@ class TTSManager:
         except Exception:
             log.exception("TTS speak failed")
 
-    @staticmethod
-    def _play_pcm(audio: TTSAudio) -> None:
-        """Play raw PCM audio through the default output device."""
+    def _play_pcm(self, audio: TTSAudio) -> None:
+        """Play raw PCM audio through the configured output device."""
         samples = np.frombuffer(audio.pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
-        sd.play(samples, samplerate=audio.sample_rate)
+        sd.play(samples, samplerate=audio.sample_rate, device=self._output_device)
         sd.wait()
 
     async def synthesize_wav(self, text: str) -> bytes:
@@ -126,6 +126,7 @@ class TTSManager:
 
     def _on_config_reload(self, settings) -> None:
         """Reinitialize engine if TTS config changed."""
+        self._output_device = settings.audio.output_device_index
         cfg = settings.tts
         if not cfg.enabled:
             if self._engine:

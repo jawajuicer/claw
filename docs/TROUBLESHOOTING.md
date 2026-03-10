@@ -43,27 +43,30 @@ python -m claw --mode voice --log-level DEBUG
 
 Look for log lines from `claw.audio_pipeline.wake_word` showing detection scores.
 
-## Ollama Connection Issues
+## LLM Server Connection Issues
 
 **Symptom:** Errors about connection refused or timeouts when processing queries.
 
 **Diagnosis:**
 
 ```bash
-# Check if Ollama is running
-curl http://localhost:11434/v1/models
+# Check if llama-swap is running
+systemctl --user status llama-swap
 
-# Check if the configured model exists
-ollama list
+# List available models
+curl http://localhost:8081/v1/models
+
+# Check which model is currently loaded
+curl http://localhost:8081/running
 ```
 
 **Solutions:**
 
-- Start Ollama if it is not running: `ollama serve` or `systemctl start ollama`
-- Verify `llm.base_url` in `config.yaml` points to the correct Ollama address (default: `http://localhost:11434/v1`)
-- Pull the configured model: `ollama pull <model-name>` (check `llm.model` in config)
+- Start llama-swap if it is not running: `systemctl --user start llama-swap`
+- Verify `llm.base_url` in `config.yaml` points to the correct address (default: `http://localhost:8081/v1`)
+- Check that the configured model exists in `llama-swap-config.yaml` (check `llm.model` in config)
 - Increase `llm.timeout` if the model is slow to respond (default is 45 seconds)
-- If Ollama runs on a different machine, update `llm.base_url` to that machine's address
+- Check llama-swap logs: `journalctl --user -u llama-swap -f`
 
 ## MCP Tool Timeouts
 

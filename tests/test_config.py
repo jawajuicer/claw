@@ -17,7 +17,7 @@ class TestSettingsDefaults:
         assert settings.llm.model == "qwen3.5:4b"
 
     def test_default_llm_base_url(self, settings):
-        assert settings.llm.base_url == "http://localhost:11434/v1"
+        assert settings.llm.base_url == "http://localhost:8081/v1"
 
     def test_default_memory_embedding_model(self, settings):
         assert settings.memory.embedding_model == "all-MiniLM-L6-v2"
@@ -140,6 +140,34 @@ class TestSaveYaml:
         data = yaml.safe_load(tmp_config.read_text())
         assert data["llm"]["model"] == s.llm.model
         assert data["admin"]["port"] == s.admin.port
+
+
+class TestComputeConfig:
+    """Test ComputeConfig defaults and validation."""
+
+    def test_default_backend(self, settings):
+        assert settings.compute.backend == "cpu"
+
+    def test_default_gpu_layers(self, settings):
+        assert settings.compute.gpu_layers == 99
+
+    def test_yaml_overrides_compute_backend(self, tmp_config):
+        from claw.config import Settings
+
+        tmp_config.write_text(yaml.dump({"compute": {"backend": "cuda", "gpu_layers": 42}}))
+        s = Settings.load()
+        assert s.compute.backend == "cuda"
+        assert s.compute.gpu_layers == 42
+
+    def test_compute_roundtrip(self, tmp_config):
+        from claw.config import Settings
+
+        tmp_config.write_text(yaml.dump({"compute": {"backend": "vulkan", "gpu_layers": 0}}))
+        s = Settings.load()
+        s.save_yaml()
+        data = yaml.safe_load(tmp_config.read_text())
+        assert data["compute"]["backend"] == "vulkan"
+        assert data["compute"]["gpu_layers"] == 0
 
 
 class TestGoogleConfigMigration:

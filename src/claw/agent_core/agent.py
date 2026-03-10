@@ -54,6 +54,14 @@ _KEYWORD_ROUTES: list[tuple[re.Pattern, set[str]]] = [
     (re.compile(r"\b(?:remind|reminder|set\s+(?:a\s+)?reminder)\b", re.I), {"set_reminder"}),
     # Email
     (re.compile(r"\b(?:email|inbox|mail|unread)\b", re.I), {"list_emails"}),
+    # Gemini web search
+    (re.compile(r"\b(?:search\s+the\s+web|google\s+it|look\s+it\s+up\s+online|web\s+search)\b", re.I),
+     {"gemini_web_search"}),
+    (re.compile(r"\b(?:current|latest|recent|today'?s)\s+(?:news|events|prices?|scores?)\b", re.I),
+     {"gemini_web_search"}),
+    # Gemini direct ask
+    (re.compile(r"\b(?:ask\s+gemini|have\s+gemini|use\s+gemini)\b", re.I), {"gemini_ask"}),
+    (re.compile(r"^gemini[,:]?\s+", re.I), {"gemini_ask"}),
 ]
 
 # Patterns that should NEVER route to tools — skip LLM routing entirely.
@@ -64,7 +72,7 @@ _NO_TOOL_PATTERNS: list[re.Pattern] = [
     re.compile(r"^\s*(?:yes|no|yeah|nah|sure|okay|ok|yep|nope)\s*[.!?]*\s*$", re.I),
     re.compile(r"\b(?:help|what\s+can\s+you\s+do|capabilities)\b", re.I),
     re.compile(r"\b(?:tell\s+me\s+(?:about|a)|explain|describe|define|what\s+is\s+(?:a\s+)?)\b", re.I),
-    re.compile(r"\b(?:news|headline|current\s+events)\b", re.I),
+    re.compile(r"\b(?:headline)\b", re.I),
     re.compile(r"\b(?:meaning\s+of\s+life|how\s+old|where\s+(?:am|are|is))\b", re.I),
 ]
 
@@ -126,6 +134,7 @@ class Agent:
         self._session: ConversationSession | None = None
         self._last_interaction: float = 0.0  # monotonic timestamp of last utterance
         self.last_usage: UsageStats | None = None
+        self._pending_escalation: str | None = None
 
     @property
     def session(self) -> ConversationSession | None:
@@ -216,6 +225,7 @@ class Agent:
             # If no tool calls, we have a final response
             if not message.tool_calls:
                 content = message.content or ""
+                content = await self._maybe_escalate(text, content, stats, t0)
                 self._session.add_assistant(content)
                 self.retriever.store_conversation_turn("assistant", content, self._session.session_id)
                 stats.elapsed_s = time.monotonic() - t0
@@ -269,6 +279,50 @@ class Agent:
             return None
 
         text_lower = text.lower().strip()
+
+        # Handle pending escalation confirmation
+        if self._pending_escalation is not None:
+            question = self._pending_escalation
+            if re.match(
+                r"^\s*(?:yes|yeah|sure|do\s+it|go\s+ahead|please|yep|ok|okay)\s*[.!?]*\s*$",
+                text_lower,
+            ):
+                self._pending_escalation = None
+                try:
+                    return str(await self.tool_router.call_tool(
+                        "gemini_ask", {"question": question},
+                    ))
+                except Exception:
+                    log.exception("Escalation gemini_ask failed")
+                    return None
+            elif re.match(
+                r"^\s*(?:no|nah|nope|nevermind|no\s+thanks|never\s+mind)\s*[.!?]*\s*$",
+                text_lower,
+            ):
+                self._pending_escalation = None
+                return None  # fall through to normal LLM
+            else:
+                # Any other utterance clears the stale offer
+                self._pending_escalation = None
+
+        # "ask gemini ..." / "have gemini ..." / "use gemini to ..." / "gemini, ..."
+        gemini_match = re.match(
+            r"(?:ask\s+gemini\s+(?:to\s+|about\s+|if\s+|why\s+|how\s+|what\s+|where\s+|when\s+|whether\s+)?)"
+            r"|(?:have\s+gemini\s+)"
+            r"|(?:use\s+gemini\s+(?:to\s+)?)"
+            r"|(?:gemini[,:]?\s+)",
+            text, re.I,
+        )
+        if gemini_match:
+            question = text[gemini_match.end():].strip()
+            if question:
+                try:
+                    return str(await self.tool_router.call_tool(
+                        "gemini_ask", {"question": question},
+                    ))
+                except Exception:
+                    log.exception("Direct dispatch gemini_ask failed")
+                    return None
 
         # play_song: "play X" / "listen to X" / "put on X"
         for prefix in ["play me ", "play ", "listen to ", "put on ", "queue up "]:
@@ -367,6 +421,49 @@ class Agent:
                 return None
 
         return None
+
+    # Patterns that suggest the LLM is uncertain about its answer
+    _LOW_CONFIDENCE_RE = re.compile(
+        r"(?:I don'?t know|I'?m not sure|I don'?t have access to"
+        r"|I can'?t browse|as an AI|I don'?t have real[- ]time"
+        r"|my training data|I cannot access the internet"
+        r"|I'?m unable to verify|I don'?t have current)",
+        re.I,
+    )
+
+    async def _maybe_escalate(
+        self,
+        original_question: str,
+        content: str,
+        stats: UsageStats,
+        t0: float,
+    ) -> str:
+        """Check LLM response for low confidence and optionally escalate to Gemini."""
+        if not self.tool_router or not self._LOW_CONFIDENCE_RE.search(content):
+            return content
+
+        mode = get_settings().gemini.escalation_mode
+        if mode == "off":
+            return content
+
+        if mode == "auto":
+            try:
+                result = str(await self.tool_router.call_tool(
+                    "gemini_ask", {"question": original_question},
+                ))
+                log.info("Auto-escalated to Gemini: %s", result[:100])
+                return result
+            except Exception:
+                log.exception("Auto-escalation gemini_ask failed")
+                return content
+
+        # mode == "ask" (default)
+        self._pending_escalation = original_question
+        return (
+            content
+            + "\n\nI'm not fully confident in that answer. "
+            "Would you like me to ask Gemini?"
+        )
 
     def _keyword_route(self, text: str, tools: list[dict]) -> list[dict] | None:
         """Fast keyword-based routing for common patterns. Bypasses LLM call.

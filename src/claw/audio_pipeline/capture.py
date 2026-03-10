@@ -41,21 +41,41 @@ class AudioCapture:
         self._buffer.append(indata[:, 0].copy())
 
     def start(self) -> None:
-        """Open the audio input stream."""
-        self._stream = sd.InputStream(
+        """Open the audio input stream.
+
+        If the configured device fails (e.g. stale index after hardware change),
+        automatically falls back to the system default device.
+        """
+        device = self.device_index
+        try:
+            self._stream = self._open_stream(device)
+        except sd.PortAudioError:
+            if device is not None:
+                log.warning(
+                    "Audio device %s failed, falling back to system default",
+                    device,
+                )
+                device = None
+                self._stream = self._open_stream(device)
+            else:
+                raise
+        self._stream.start()
+        log.info(
+            "Audio capture started (device=%s, rate=%d, block=%d)",
+            device if device is not None else "default",
+            self.sample_rate,
+            self.block_size,
+        )
+
+    def _open_stream(self, device: int | None) -> sd.InputStream:
+        """Create an InputStream for the given device."""
+        return sd.InputStream(
             samplerate=self.sample_rate,
             channels=self.channels,
             blocksize=self.block_size,
             dtype="float32",
-            device=self.device_index,
+            device=device,
             callback=self._callback,
-        )
-        self._stream.start()
-        log.info(
-            "Audio capture started (device=%s, rate=%d, block=%d)",
-            self.device_index or "default",
-            self.sample_rate,
-            self.block_size,
         )
 
     def stop(self) -> None:

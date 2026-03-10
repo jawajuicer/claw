@@ -1,4 +1,4 @@
-"""Ollama LLM client via OpenAI-compatible API."""
+"""LLM client via OpenAI-compatible API."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 
 
 class LLMClient:
-    """Async LLM client wrapping Ollama's OpenAI-compatible endpoint."""
+    """Async LLM client wrapping an OpenAI-compatible endpoint."""
 
     def __init__(self) -> None:
         cfg = get_settings().llm

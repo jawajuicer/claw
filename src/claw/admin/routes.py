@@ -107,6 +107,11 @@ async def settings_page(request: Request):
         else:
             acct_status[label] = False
 
+    # Gemini API key status
+    from claw.secret_store import exists as secret_exists, mask as secret_mask
+    gemini_key_set = secret_exists("gemini_api_key")
+    gemini_key_masked = secret_mask("gemini_api_key") if gemini_key_set else "Not set"
+
     return request.app.state.templates.TemplateResponse(
         "settings.html",
         {
@@ -114,6 +119,8 @@ async def settings_page(request: Request):
             "settings": settings.model_dump(),
             "has_google_credentials": has_google_credentials,
             "acct_status": acct_status,
+            "gemini_key_set": gemini_key_set,
+            "gemini_key_masked": gemini_key_masked,
         },
     )
 
@@ -415,36 +422,64 @@ async def api_audio_devices():
     return {"devices": devices, "default": default_input}
 
 
-@router.get("/api/ollama/models")
-async def api_ollama_models():
-    """List models available in the connected Ollama instance."""
+@router.get("/api/audio/devices/output")
+async def api_audio_output_devices():
+    """List available audio output devices via sounddevice."""
+    import sounddevice as sd
+
+    devices = []
+    try:
+        all_devs = sd.query_devices()
+        default_output = sd.default.device[1]  # default output device index
+        for i, d in enumerate(all_devs):
+            if d["max_output_channels"] > 0:
+                devices.append({
+                    "index": i,
+                    "name": d["name"],
+                    "channels": d["max_output_channels"],
+                    "sample_rate": int(d["default_samplerate"]),
+                })
+    except Exception as e:
+        log.warning("Failed to query audio output devices: %s", e)
+        return {"devices": [], "default": None, "error": str(e)}
+
+    return {"devices": devices, "default": default_output}
+
+
+@router.get("/api/models")
+async def api_models():
+    """List models available in the connected LLM server (OpenAI-compatible)."""
     import httpx
     from claw.config import get_settings
 
-    base_url = get_settings().llm.base_url
-    # Strip /v1 suffix to get native Ollama API base
-    ollama_base = base_url.rstrip("/")
-    if ollama_base.endswith("/v1"):
-        ollama_base = ollama_base[:-3]
+    base_url = get_settings().llm.base_url.rstrip("/")
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{ollama_base}/api/tags")
+            resp = await client.get(f"{base_url}/models")
             resp.raise_for_status()
             data = resp.json()
             models = []
-            for m in data.get("models", []):
-                details = m.get("details", {})
+            for m in data.get("data", []):
+                meta = m.get("meta", {})
+                # llama-swap nests metadata under meta.llamaswap
+                ls_meta = meta.get("llamaswap", meta)
                 models.append({
-                    "name": m.get("name", ""),
-                    "size": m.get("size", 0),
-                    "parameter_size": details.get("parameter_size", ""),
-                    "family": details.get("family", ""),
+                    "name": m.get("id", ""),
+                    "size": 0,
+                    "parameter_size": ls_meta.get("parameter_size", ""),
+                    "family": ls_meta.get("family", ""),
                 })
             return {"models": models}
     except Exception as e:
-        log.warning("Failed to query Ollama models: %s", e)
+        log.warning("Failed to query LLM models: %s", e)
         return {"models": [], "error": str(e)}
+
+
+@router.get("/api/ollama/models")
+async def api_ollama_models_redirect():
+    """Deprecated: redirects to /api/models."""
+    return RedirectResponse("/api/models", status_code=301)
 
 
 @router.get("/api/wake/models")
@@ -480,7 +515,6 @@ async def api_get_settings():
 @router.post("/api/settings")
 async def api_update_settings(request: Request):
     """Update settings from the admin panel."""
-    import httpx
     from pydantic import ValidationError
     from claw.config import get_settings, reload_settings
 
@@ -511,21 +545,9 @@ async def api_update_settings(request: Request):
     new_settings.save_yaml()
     reload_settings()
 
-    # Unload old model from Ollama if model changed
     new_model = new_settings.llm.model
     if new_model != old_model:
-        log.info("Model changed from %s to %s, unloading old model", old_model, new_model)
-        ollama_base = new_settings.llm.base_url.rstrip("/")
-        if ollama_base.endswith("/v1"):
-            ollama_base = ollama_base[:-3]
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                await client.post(
-                    f"{ollama_base}/api/generate",
-                    json={"model": old_model, "keep_alive": 0},
-                )
-        except Exception:
-            log.warning("Failed to unload old model %s from Ollama", old_model)
+        log.info("Model changed from %s to %s (server handles unloading via TTL)", old_model, new_model)
 
     return {"status": "ok", "message": "Settings updated and reloaded"}
 
@@ -802,6 +824,203 @@ async def auth_google_complete(request: Request):
 
     log.info("Google account '%s' (%s) linked successfully (manual)", label, email or "unknown email")
     return {"status": "ok", "label": label, "email": email}
+
+
+# ── Gemini API key + log endpoints ────────────────────────────────────────────
+
+@router.post("/api/gemini/key")
+async def api_gemini_key_save(request: Request):
+    """Validate, test, and store a Gemini API key."""
+    from claw.secret_store import store as secret_store
+
+    body = await request.json()
+    key = body.get("key", "").strip()
+
+    if not key:
+        return JSONResponse({"error": "No API key provided"}, status_code=400)
+
+    if not key.startswith("AIza"):
+        return JSONResponse(
+            {"error": "Invalid key format. Gemini API keys start with 'AIza'."},
+            status_code=400,
+        )
+
+    # Test the key by listing models
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=key)
+        models = list(genai.list_models())
+        if not models:
+            return JSONResponse({"error": "Key is valid but no models are accessible."}, status_code=400)
+    except ImportError:
+        return JSONResponse(
+            {"error": "google-generativeai not installed. Run: pip install 'claw[gemini]'"},
+            status_code=500,
+        )
+    except Exception as exc:
+        return JSONResponse(
+            {"error": f"API key test failed: {exc}"},
+            status_code=400,
+        )
+
+    secret_store("gemini_api_key", key)
+    masked = key[:4] + "***" + key[-4:]
+    log.info("Gemini API key stored (masked: %s)", masked)
+    return {"status": "ok", "masked": masked}
+
+
+@router.delete("/api/gemini/key")
+async def api_gemini_key_delete():
+    """Remove the stored Gemini API key."""
+    from claw.secret_store import delete as secret_delete
+    secret_delete("gemini_api_key")
+    log.info("Gemini API key removed")
+    return {"status": "ok"}
+
+
+@router.get("/api/gemini/logs")
+async def api_gemini_logs():
+    """Return recent Gemini API call logs and today's usage."""
+    try:
+        from claw.config import PROJECT_ROOT, get_settings
+        cfg = get_settings().gemini
+
+        log_dir = PROJECT_ROOT / cfg.log_dir
+        entries = []
+        if log_dir.exists():
+            for log_file in sorted(log_dir.glob("*.jsonl"), reverse=True):
+                for line in reversed(log_file.read_text().splitlines()):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entries.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+                    if len(entries) >= 100:
+                        break
+                if len(entries) >= 100:
+                    break
+
+        # Count today's usage from log entries
+        from datetime import date as date_type
+        today = date_type.today().isoformat()
+        today_requests = sum(1 for e in entries if e.get("timestamp", "").startswith(today))
+        today_grounding = sum(
+            1 for e in entries
+            if e.get("timestamp", "").startswith(today) and e.get("tool") == "gemini_web_search"
+        )
+
+        return {
+            "entries": entries,
+            "usage": {
+                "requests_today": today_requests,
+                "grounding_today": today_grounding,
+                "daily_limit": cfg.daily_request_limit,
+                "grounding_limit": cfg.grounding_daily_limit,
+            },
+        }
+    except Exception:
+        log.exception("Failed to read Gemini logs")
+        return {"entries": [], "usage": {}}
+
+
+@router.delete("/api/gemini/logs")
+async def api_gemini_logs_delete():
+    """Wipe all Gemini API call logs."""
+    from claw.config import PROJECT_ROOT, get_settings
+    cfg = get_settings().gemini
+    log_dir = PROJECT_ROOT / cfg.log_dir
+    count = 0
+    if log_dir.exists():
+        for log_file in log_dir.glob("*.jsonl"):
+            log_file.unlink()
+            count += 1
+    log.info("Wiped %d Gemini log file(s)", count)
+    return {"status": "ok", "files_deleted": count}
+
+
+# ── Compute backend endpoints ────────────────────────────────────────────────
+
+_compute_build_task: asyncio.Task | None = None
+
+
+@router.get("/api/compute/hardware")
+async def api_compute_hardware():
+    """Detect available compute hardware (GPU, iGPU, CPU)."""
+    from claw.compute import detect_all
+
+    try:
+        result = await asyncio.to_thread(detect_all)
+        return result
+    except Exception as exc:
+        log.exception("Hardware detection failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@router.post("/api/compute/switch")
+async def api_compute_switch(request: Request):
+    """Switch compute backend: install deps, rebuild llama.cpp, update config."""
+    global _compute_build_task
+    from claw.compute import VALID_BACKENDS, is_build_running, switch_backend
+
+    body = await request.json()
+    target = body.get("backend", "").strip()
+
+    if target not in VALID_BACKENDS:
+        return JSONResponse({"error": f"Invalid backend: {target}"}, status_code=400)
+
+    if is_build_running():
+        return JSONResponse({"error": "A build is already in progress"}, status_code=409)
+
+    async def _run_switch():
+        result = await switch_backend(target)
+        if result["status"] == "ok":
+            # Save new backend to config
+            from claw.config import get_settings, reload_settings
+            settings = get_settings()
+            current = settings.model_dump()
+            current["compute"]["backend"] = target
+            new_settings = type(settings)(**current)
+            new_settings.save_yaml()
+            reload_settings()
+            log.info("Compute backend switched to %s", target)
+
+    _compute_build_task = asyncio.create_task(_run_switch())
+    request.app.state.bg_tasks.add(_compute_build_task)
+    _compute_build_task.add_done_callback(request.app.state.bg_tasks.discard)
+
+    return {"status": "ok", "message": f"Switching to {target}..."}
+
+
+@router.get("/api/compute/progress")
+async def api_compute_progress():
+    """SSE endpoint for build progress updates."""
+    from claw.compute import get_build_progress, is_build_running
+
+    async def generate():
+        last_idx = 0
+        while True:
+            progress = get_build_progress()
+            while last_idx < len(progress):
+                entry = progress[last_idx]
+                yield {"event": "build_progress", "data": json.dumps(entry)}
+                last_idx += 1
+                # Check if done
+                if entry.get("percent", 0) >= 100 or entry.get("phase") == "error":
+                    yield {"event": "build_complete", "data": json.dumps(entry)}
+                    return
+
+            if not is_build_running() and last_idx >= len(progress):
+                # Build finished but we may have missed the 100% event
+                yield {"event": "build_complete", "data": json.dumps(
+                    {"phase": "done", "percent": 100, "message": "Complete"}
+                )}
+                return
+
+            await asyncio.sleep(0.5)
+
+    return EventSourceResponse(generate())
 
 
 # ── Music control endpoints ──────────────────────────────────────────────────

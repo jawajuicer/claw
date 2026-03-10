@@ -21,9 +21,10 @@ CONFIG_YAML = PROJECT_ROOT / "config.yaml"
 
 class AudioConfig(BaseModel):
     device_index: int | None = None
+    output_device_index: int | None = None
     sample_rate: int = 16000
 
-    @field_validator("device_index", mode="before")
+    @field_validator("device_index", "output_device_index", mode="before")
     @classmethod
     def empty_str_to_none(cls, v):
         if v == "" or v == "null":
@@ -77,8 +78,8 @@ class TTSConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    base_url: str = "http://localhost:11434/v1"
-    api_key: str = "ollama"
+    base_url: str = "http://localhost:8081/v1"
+    api_key: str = "no-key"
     model: str = "qwen3.5:4b"
     temperature: float = 0.7
     max_tokens: int = 1024
@@ -91,6 +92,11 @@ class LLMConfig(BaseModel):
         "on the user's machine. You have access to tools via MCP servers. "
         "Be concise in your responses since they will be spoken aloud."
     )
+
+
+class ComputeConfig(BaseModel):
+    backend: str = "cpu"       # "cpu" | "cuda" | "rocm" | "vulkan"
+    gpu_layers: int = 99       # --n-gpu-layers value (0 for CPU)
 
 
 class MemoryConfig(BaseModel):
@@ -157,6 +163,23 @@ class GoogleAuthConfig(BaseModel):
 class WeatherConfig(BaseModel):
     api_key: str = ""  # OpenWeatherMap API key (free tier)
     default_location: str = ""  # User's location, e.g. "Akron, OH" — set in settings
+
+
+class GeminiConfig(BaseModel):
+    enabled: bool = False
+    model: str = "gemini-2.5-flash"
+    pro_model: str = "gemini-2.5-pro"
+    temperature: float = 0.7
+    max_output_tokens: int = 2048
+    web_search: bool = True
+    document_analysis: bool = True
+    image_understanding: bool = True
+    reasoning_fallback: bool = False
+    escalation_mode: str = "ask"  # "ask", "auto", or "off"
+    daily_request_limit: int = 200
+    grounding_daily_limit: int = 400
+    log_requests: bool = True
+    log_dir: str = "data/gemini/logs"
 
 
 class MCPConfig(BaseModel):
@@ -267,9 +290,11 @@ class Settings(BaseSettings):
     whisper: WhisperConfig = Field(default_factory=WhisperConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    compute: ComputeConfig = Field(default_factory=ComputeConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     weather: WeatherConfig = Field(default_factory=WeatherConfig)
+    gemini: GeminiConfig = Field(default_factory=GeminiConfig)
     youtube_music: YouTubeMusicConfig = Field(default_factory=YouTubeMusicConfig)
     notes: NotesConfig = Field(default_factory=NotesConfig)
     local_calendar: LocalCalendarConfig = Field(default_factory=LocalCalendarConfig)

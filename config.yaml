@@ -37,8 +37,8 @@ tts:
   admin_chat_enabled: true
   admin_chat_autoplay: false
 llm:
-  base_url: http://localhost:11434/v1
-  api_key: ollama
+  base_url: http://localhost:8081/v1
+  api_key: no-key
   model: qwen3.5-unsloth:0.8b
   temperature: 0.7
   max_tokens: 1024
@@ -65,6 +65,7 @@ mcp:
   - youtube_music
   - system_control
   - weather
+  - gemini
   - notes
   - local_calendar
   - google_calendar
@@ -82,6 +83,21 @@ youtube_music:
 weather:
   api_key: "3c8810c88d3055606192cdda5e700942"
   default_location: ""
+gemini:
+  enabled: false
+  model: gemini-2.5-flash
+  pro_model: gemini-2.5-pro
+  temperature: 0.7
+  max_output_tokens: 2048
+  web_search: true
+  document_analysis: true
+  image_understanding: true
+  reasoning_fallback: false
+  escalation_mode: ask
+  daily_request_limit: 200
+  grounding_daily_limit: 400
+  log_requests: true
+  log_dir: data/gemini/logs
 notes:
   enabled: true
   storage_dir: data/notes

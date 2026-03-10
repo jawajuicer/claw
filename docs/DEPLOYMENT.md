@@ -12,11 +12,11 @@ This guide covers deploying The Claw on a dedicated machine as a always-on voice
 | **CPU** | Modern multi-core (AMD Ryzen or Intel, 4+ cores recommended) |
 | **Audio** | USB microphone or any PipeWire-compatible audio input |
 | **Audio server** | PipeWire (default on Ubuntu 24.04) |
-| **Network** | Local network access to Ollama; internet for weather, Google services, YouTube Music |
+| **Network** | Internet for weather, Google services, YouTube Music |
 
 ### Software Prerequisites
 
-- **Ollama** -- install from [ollama.ai](https://ollama.ai) and pull a model before starting The Claw
+- **llama-swap + llama.cpp** -- installed automatically by `install.sh`; provides the LLM inference backend
 - **PipeWire** -- ships with Ubuntu 24.04 by default; runs as a user service
 
 ## Installation
@@ -46,19 +46,23 @@ The installer performs these steps:
 8. **Environment file** -- copies `.env.example` to `.env` if it does not exist
 9. **Systemd service** -- installs `claw.service` to `~/.config/systemd/user/` and enables linger for boot-time start
 
-### 3. Pull an Ollama Model
+### 3. Download a Model
+
+Download a GGUF model from Hugging Face into `~/models/`:
 
 ```bash
-ollama pull qwen2.5:14b
+pip install huggingface-hub
+huggingface-cli download unsloth/Qwen2.5-14B-Instruct-GGUF \
+    --include "Qwen2.5-14B-Instruct-Q4_K_M.gguf" --local-dir ~/models
 ```
 
-You can use any Ollama-compatible model. Update `llm.model` in `config.yaml` to match. Smaller models (0.5B-4B) respond faster but are less capable; larger models (14B+) are more capable but slower.
+Then add the model to `~/claw/llama-swap-config.yaml` and restart llama-swap. Smaller models (0.5B-4B) respond faster but are less capable; larger models (14B+) are more capable but slower.
 
 ### 4. Configure
 
 Edit `config.yaml` or `.env` to match your setup. At minimum:
 
-- `llm.model` -- the Ollama model name you pulled
+- `llm.model` -- the model name as defined in `llama-swap-config.yaml`
 - `audio.device_index` -- leave as `null` for system default, or set to a specific device index (list devices with `python -c "import sounddevice; print(sounddevice.query_devices())"`)
 
 ## Systemd Service Management
@@ -109,7 +113,7 @@ The systemd unit file (`claw.service`) is configured with:
 - **Memory limit** -- 8 GB (`MemoryMax=8G`)
 - **CPU quota** -- 200% (2 cores)
 - **Working directory** -- `~/claw`
-- **Dependency** -- starts after `pipewire.service`
+- **Dependencies** -- starts after `pipewire.service` and `llama-swap.service`
 
 To adjust resource limits, edit `~/.config/systemd/user/claw.service` and run `systemctl --user daemon-reload`.
 

@@ -24,7 +24,84 @@ sudo apt-get install -y -qq \
     portaudio19-dev \
     ffmpeg \
     mpv \
-    libmpv-dev
+    libmpv-dev \
+    cmake \
+    build-essential
+
+# ── Detect GPU hardware & build llama.cpp ─────────────────────────────────
+
+echo ""
+echo "--- Detecting GPU hardware ---"
+CMAKE_GPU_FLAGS=""
+DETECTED_BACKEND="cpu"
+
+if command -v nvidia-smi &>/dev/null && nvidia-smi --query-gpu=name --format=csv,noheader &>/dev/null; then
+    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+    echo "NVIDIA GPU detected: ${GPU_NAME}"
+    echo "Installing CUDA toolkit..."
+    sudo apt-get install -y -qq nvidia-cuda-toolkit
+    CMAKE_GPU_FLAGS="-DGGML_CUDA=ON"
+    DETECTED_BACKEND="cuda"
+elif [ -d /sys/class/kfd/kfd/topology/nodes ]; then
+    GFX_VER=$(grep -rh 'gfx_target_version' /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null | awk '{print $2}' | grep -v '^0$' | head -1)
+    if [ -n "${GFX_VER}" ]; then
+        echo "AMD GPU detected (gfx${GFX_VER})"
+        echo "Installing ROCm..."
+        sudo apt-get install -y -qq rocm-dev
+        CMAKE_GPU_FLAGS="-DGGML_ROCM=ON"
+        DETECTED_BACKEND="rocm"
+    fi
+elif [ -e /dev/dri/renderD128 ]; then
+    echo "Vulkan-capable GPU detected"
+    echo "Installing Vulkan tools..."
+    sudo apt-get install -y -qq vulkan-tools libvulkan-dev
+    CMAKE_GPU_FLAGS="-DGGML_VULKAN=ON"
+    DETECTED_BACKEND="vulkan"
+fi
+
+if [ "${DETECTED_BACKEND}" = "cpu" ]; then
+    echo "No GPU detected — building for CPU only"
+fi
+
+echo ""
+echo "--- Building llama.cpp (${DETECTED_BACKEND}) ---"
+if [ ! -f /opt/llama.cpp/build/bin/llama-server ]; then
+    if [ ! -d /opt/llama.cpp ]; then
+        sudo git clone https://github.com/ggml-org/llama.cpp.git /opt/llama.cpp
+    fi
+    cd /opt/llama.cpp
+    sudo cmake -B build -DCMAKE_BUILD_TYPE=Release ${CMAKE_GPU_FLAGS}
+    sudo cmake --build build --config Release -j "$(nproc)"
+    cd "${INSTALL_DIR}"
+    echo "llama.cpp built at /opt/llama.cpp/build/bin/llama-server (${DETECTED_BACKEND})"
+else
+    echo "llama.cpp already built"
+fi
+
+# ── Download llama-swap ────────────────────────────────────────────────────
+
+echo ""
+echo "--- Installing llama-swap ---"
+if [ ! -f /opt/llama-swap/llama-swap ]; then
+    sudo mkdir -p /opt/llama-swap
+    LLAMA_SWAP_URL=$(curl -sL https://api.github.com/repos/mostlygeek/llama-swap/releases/latest \
+        | python3 -c "import sys,json; r=json.load(sys.stdin); urls=[a['browser_download_url'] for a in r.get('assets',[]) if 'linux_amd64' in a['name']]; print(urls[0]) if urls else None" \
+        | head -1)
+    if [ -z "${LLAMA_SWAP_URL}" ]; then
+        echo "ERROR: Could not find llama-swap download URL. Check GitHub API rate limits."
+        exit 1
+    fi
+    sudo curl -L -o /tmp/llama-swap.tar.gz "${LLAMA_SWAP_URL}"
+    sudo tar xzf /tmp/llama-swap.tar.gz -C /opt/llama-swap
+    sudo rm -f /tmp/llama-swap.tar.gz
+    echo "llama-swap installed at /opt/llama-swap/llama-swap"
+else
+    echo "llama-swap already installed"
+fi
+
+# ── Models directory ───────────────────────────────────────────────────────
+
+mkdir -p "${HOME}/models"
 
 # ── Python virtual environment ──────────────────────────────────────────────
 
@@ -90,6 +167,17 @@ else
     echo ".env already exists"
 fi
 
+# ── Write detected compute backend to config.yaml ────────────────────────
+
+CONFIG_FILE="${INSTALL_DIR}/config.yaml"
+if [ -f "${CONFIG_FILE}" ] && ! grep -q "^compute:" "${CONFIG_FILE}"; then
+    echo "" >> "${CONFIG_FILE}"
+    echo "compute:" >> "${CONFIG_FILE}"
+    echo "  backend: ${DETECTED_BACKEND}" >> "${CONFIG_FILE}"
+    echo "  gpu_layers: 99" >> "${CONFIG_FILE}"
+    echo "Appended compute backend (${DETECTED_BACKEND}) to config.yaml"
+fi
+
 # ── systemd user service ────────────────────────────────────────────────────
 
 echo ""
@@ -97,8 +185,26 @@ echo "--- Setting up systemd user service ---"
 SYSTEMD_DIR="${HOME}/.config/systemd/user"
 mkdir -p "${SYSTEMD_DIR}"
 cp "${INSTALL_DIR}/claw.service" "${SYSTEMD_DIR}/${SERVICE_NAME}.service"
+
+# llama-swap service
+cat > "${SYSTEMD_DIR}/llama-swap.service" <<LLAMA_SWAP_EOF
+[Unit]
+Description=llama-swap — LLM inference proxy
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/opt/llama-swap/llama-swap --config %h/claw/llama-swap-config.yaml --listen :8081
+Restart=on-failure
+RestartSec=5
+Environment=PATH=/opt/llama.cpp/build/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
+LLAMA_SWAP_EOF
+
 systemctl --user daemon-reload
-echo "Service installed at ${SYSTEMD_DIR}/${SERVICE_NAME}.service"
+echo "Services installed at ${SYSTEMD_DIR}/"
 
 # Enable linger so user services start at boot
 echo ""
@@ -107,6 +213,13 @@ sudo loginctl enable-linger "$(whoami)"
 
 echo ""
 echo "=== Installation complete ==="
+echo ""
+echo "Next steps:"
+echo "  1. Download a model into ~/models/ (GGUF format):"
+echo "     pip install huggingface-hub"
+echo "     huggingface-cli download unsloth/Qwen2.5-0.5B-Instruct-GGUF --include '*.gguf' --local-dir ~/models"
+echo "  2. Create ~/claw/llama-swap-config.yaml (see docs/DEPLOYMENT.md)"
+echo "  3. systemctl --user start llama-swap"
 echo ""
 echo "YouTube Music setup (optional):"
 echo "  python mcp_tools/youtube_music/setup_auth.py   # One-time auth"

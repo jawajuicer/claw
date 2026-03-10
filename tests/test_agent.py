@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 
@@ -281,3 +281,196 @@ class TestExtractFacts:
         mock_retriever.extract_and_store_facts = AsyncMock(return_value=["User's name is Chuck"])
         facts = await agent.extract_facts()
         assert facts == ["User's name is Chuck"]
+
+
+class TestGeminiDirectDispatch:
+    """Test 'ask gemini' direct dispatch patterns."""
+
+    async def test_ask_gemini_about(self, settings, mock_llm, mock_retriever, mock_tool_router):
+        from claw.agent_core.agent import Agent
+
+        mock_tool_router.call_tool = AsyncMock(return_value="Gemini says: quarks and stuff")
+        agent = Agent(llm=mock_llm, retriever=mock_retriever, tool_router=mock_tool_router)
+        result = await agent._try_direct_dispatch("ask gemini about quantum physics")
+        mock_tool_router.call_tool.assert_called_with(
+            "gemini_ask", {"question": "quantum physics"},
+        )
+        assert "quarks" in result
+
+    async def test_have_gemini_explain(self, settings, mock_llm, mock_retriever, mock_tool_router):
+        from claw.agent_core.agent import Agent
+
+        mock_tool_router.call_tool = AsyncMock(return_value="Gemini explanation")
+        agent = Agent(llm=mock_llm, retriever=mock_retriever, tool_router=mock_tool_router)
+        await agent._try_direct_dispatch("have gemini explain black holes")
+        mock_tool_router.call_tool.assert_called_with(
+            "gemini_ask", {"question": "explain black holes"},
+        )
+
+    async def test_use_gemini_to(self, settings, mock_llm, mock_retriever, mock_tool_router):
+        from claw.agent_core.agent import Agent
+
+        mock_tool_router.call_tool = AsyncMock(return_value="Gemini result")
+        agent = Agent(llm=mock_llm, retriever=mock_retriever, tool_router=mock_tool_router)
+        await agent._try_direct_dispatch("use gemini to write a haiku")
+        mock_tool_router.call_tool.assert_called_with(
+            "gemini_ask", {"question": "write a haiku"},
+        )
+
+    async def test_gemini_bare_prefix(self, settings, mock_llm, mock_retriever, mock_tool_router):
+        from claw.agent_core.agent import Agent
+
+        mock_tool_router.call_tool = AsyncMock(return_value="Blue sky answer")
+        agent = Agent(llm=mock_llm, retriever=mock_retriever, tool_router=mock_tool_router)
+        await agent._try_direct_dispatch("gemini, why is the sky blue")
+        mock_tool_router.call_tool.assert_called_with(
+            "gemini_ask", {"question": "why is the sky blue"},
+        )
+
+    async def test_ask_gemini_if(self, settings, mock_llm, mock_retriever, mock_tool_router):
+        from claw.agent_core.agent import Agent
+
+        mock_tool_router.call_tool = AsyncMock(return_value="Yes it is")
+        agent = Agent(llm=mock_llm, retriever=mock_retriever, tool_router=mock_tool_router)
+        await agent._try_direct_dispatch("ask gemini if water is wet")
+        mock_tool_router.call_tool.assert_called_with(
+            "gemini_ask", {"question": "water is wet"},
+        )
+
+    async def test_ask_gemini_empty_question_falls_through(
+        self, settings, mock_llm, mock_retriever, mock_tool_router,
+    ):
+        from claw.agent_core.agent import Agent
+
+        agent = Agent(llm=mock_llm, retriever=mock_retriever, tool_router=mock_tool_router)
+        result = await agent._try_direct_dispatch("ask gemini")
+        assert result is None
+
+
+class TestEscalation:
+    """Test smart escalation when LLM is uncertain."""
+
+    async def test_ask_mode_offers_escalation(
+        self, settings, mock_llm, mock_retriever, mock_tool_router, make_chat_response,
+    ):
+        from claw.agent_core.agent import Agent
+
+        uncertain_response = make_chat_response(
+            content="I'm not sure about the current GDP. My training data may be outdated.",
+        )
+        mock_llm.chat = AsyncMock(return_value=uncertain_response)
+
+        with patch("claw.agent_core.agent.get_settings") as mock_gs:
+            mock_settings = settings
+            mock_settings.gemini.escalation_mode = "ask"
+            mock_gs.return_value = mock_settings
+            agent = Agent(llm=mock_llm, retriever=mock_retriever, tool_router=mock_tool_router)
+            result = await agent.process_utterance("What is the GDP of France?")
+
+        assert "Would you like me to ask Gemini?" in result
+        assert agent._pending_escalation == "What is the GDP of France?"
+
+    async def test_affirmative_follow_up_escalates(
+        self, settings, mock_llm, mock_retriever, mock_tool_router,
+    ):
+        from claw.agent_core.agent import Agent
+
+        mock_tool_router.call_tool = AsyncMock(return_value="The GDP of France is $3.1T")
+        agent = Agent(llm=mock_llm, retriever=mock_retriever, tool_router=mock_tool_router)
+        agent._pending_escalation = "What is the GDP of France?"
+
+        result = await agent._try_direct_dispatch("yes")
+        mock_tool_router.call_tool.assert_called_with(
+            "gemini_ask", {"question": "What is the GDP of France?"},
+        )
+        assert "3.1T" in result
+        assert agent._pending_escalation is None
+
+    async def test_negative_follow_up_clears(
+        self, settings, mock_llm, mock_retriever, mock_tool_router,
+    ):
+        from claw.agent_core.agent import Agent
+
+        agent = Agent(llm=mock_llm, retriever=mock_retriever, tool_router=mock_tool_router)
+        agent._pending_escalation = "What is the GDP of France?"
+
+        result = await agent._try_direct_dispatch("no")
+        assert result is None
+        assert agent._pending_escalation is None
+
+    async def test_other_utterance_clears_pending(
+        self, settings, mock_llm, mock_retriever, mock_tool_router,
+    ):
+        from claw.agent_core.agent import Agent
+
+        agent = Agent(llm=mock_llm, retriever=mock_retriever, tool_router=mock_tool_router)
+        agent._pending_escalation = "old question"
+
+        # Any non-yes/no utterance clears the pending escalation
+        await agent._try_direct_dispatch("play some music")
+        assert agent._pending_escalation is None
+
+    async def test_auto_mode_escalates_silently(
+        self, settings, mock_llm, mock_retriever, mock_tool_router, make_chat_response,
+    ):
+        from claw.agent_core.agent import Agent
+
+        uncertain_response = make_chat_response(
+            content="I don't know the answer to that. I don't have real-time data.",
+        )
+        mock_llm.chat = AsyncMock(return_value=uncertain_response)
+        mock_tool_router.call_tool = AsyncMock(return_value="Gemini's answer")
+
+        with patch("claw.agent_core.agent.get_settings") as mock_gs:
+            mock_settings = settings
+            mock_settings.gemini.escalation_mode = "auto"
+            mock_gs.return_value = mock_settings
+            agent = Agent(llm=mock_llm, retriever=mock_retriever, tool_router=mock_tool_router)
+            result = await agent.process_utterance("What time is it on Mars?")
+
+        assert result == "Gemini's answer"
+        mock_tool_router.call_tool.assert_called_with(
+            "gemini_ask", {"question": "What time is it on Mars?"},
+        )
+        assert agent._pending_escalation is None
+
+    async def test_off_mode_no_escalation(
+        self, settings, mock_llm, mock_retriever, mock_tool_router, make_chat_response,
+    ):
+        from claw.agent_core.agent import Agent
+
+        uncertain_response = make_chat_response(
+            content="I don't know the current price.",
+        )
+        mock_llm.chat = AsyncMock(return_value=uncertain_response)
+
+        with patch("claw.agent_core.agent.get_settings") as mock_gs:
+            mock_settings = settings
+            mock_settings.gemini.escalation_mode = "off"
+            mock_gs.return_value = mock_settings
+            agent = Agent(llm=mock_llm, retriever=mock_retriever, tool_router=mock_tool_router)
+            result = await agent.process_utterance("What is Bitcoin at right now?")
+
+        assert "I don't know" in result
+        assert "Gemini" not in result
+        assert agent._pending_escalation is None
+
+    async def test_confident_response_no_escalation(
+        self, settings, mock_llm, mock_retriever, mock_tool_router, make_chat_response,
+    ):
+        from claw.agent_core.agent import Agent
+
+        confident_response = make_chat_response(
+            content="The speed of light is approximately 299,792,458 meters per second.",
+        )
+        mock_llm.chat = AsyncMock(return_value=confident_response)
+
+        with patch("claw.agent_core.agent.get_settings") as mock_gs:
+            mock_settings = settings
+            mock_settings.gemini.escalation_mode = "ask"
+            mock_gs.return_value = mock_settings
+            agent = Agent(llm=mock_llm, retriever=mock_retriever, tool_router=mock_tool_router)
+            result = await agent.process_utterance("How fast is light?")
+
+        assert "Gemini" not in result
+        assert agent._pending_escalation is None

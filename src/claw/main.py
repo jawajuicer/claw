@@ -7,6 +7,7 @@ import logging
 import re
 import signal
 
+import sounddevice as sd
 import uvicorn
 
 from claw.admin.app import create_admin_app
@@ -98,110 +99,145 @@ class Claw:
         log.info("The Claw initialized")
 
     async def run_voice_loop(self) -> None:
-        """Main voice interaction loop: wake word → record → transcribe → agent."""
+        """Main voice interaction loop: wake word → record → transcribe → agent.
+
+        Self-healing: if audio capture fails, retries with exponential backoff
+        (up to 60s). Transient hardware errors (USB disconnect/reconnect) are
+        recovered automatically without restarting the service.
+        """
         from claw.audio_pipeline.capture import AudioCapture
         from claw.audio_pipeline.transcriber import Transcriber
         from claw.audio_pipeline.wake_word import WakeWordDetector
 
-        capture = AudioCapture()
         wake = WakeWordDetector()
         transcriber = Transcriber()
-
         wake.load()
         transcriber.load()
-        capture.start()
 
-        await self.broadcaster.update_state("idle")
-        log.info("Voice loop started — listening for wake word")
+        retry_delay = 2
+        max_retry_delay = 60
 
-        try:
+        while not self._shutdown_event.is_set():
+            capture = AudioCapture()
+            try:
+                capture.start()
+            except Exception:
+                log.exception(
+                    "Audio capture failed to start, retrying in %ds", retry_delay
+                )
+                await self.broadcaster.update_state("error")
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, max_retry_delay)
+                continue
+
+            # Successfully started — reset backoff
+            retry_delay = 2
+            await self.broadcaster.update_state("idle")
+            log.info("Voice loop started — listening for wake word")
+
+            try:
+                await self._voice_loop_inner(capture, wake, transcriber)
+            except sd.PortAudioError:
+                log.exception("Audio device error, restarting capture")
+            except Exception:
+                log.exception("Unexpected voice loop error, restarting capture")
+            finally:
+                capture.stop()
+
+            if not self._shutdown_event.is_set():
+                await asyncio.sleep(retry_delay)
+
+    async def _voice_loop_inner(
+        self,
+        capture: "AudioCapture",
+        wake: "WakeWordDetector",
+        transcriber: "Transcriber",
+    ) -> None:
+        """Inner voice loop — separated so the outer loop can restart on errors."""
+        while not self._shutdown_event.is_set():
+            chunk = capture.read_chunk()
+            if chunk is None:
+                await asyncio.sleep(0.01)
+                continue
+
+            # Wake word detection
+            detected = wake.process_chunk(chunk)
+            if detected is None:
+                continue
+
+            # Wake word triggered
+            log.info("Wake word detected: %s", detected)
+            await self.broadcaster.update_state("listening", last_wake_word=detected)
+            await asyncio.to_thread(play_listening_chime)
+
+            # Conversation turn loop: handles follow-up questions
+            # from Claw without requiring the wake word again.
+            # All tools are passed — the agent's tool router selects
+            # only what's needed via a lightweight manifest call.
+            tools = self.registry.get_openai_tools() or None
+            response = ""
+
             while not self._shutdown_event.is_set():
-                chunk = capture.read_chunk()
-                if chunk is None:
-                    await asyncio.sleep(0.01)
-                    continue
-
-                # Wake word detection
-                detected = wake.process_chunk(chunk)
-                if detected is None:
-                    continue
-
-                # Wake word triggered
-                log.info("Wake word detected: %s", detected)
-                await self.broadcaster.update_state("listening", last_wake_word=detected)
-                await asyncio.to_thread(play_listening_chime)
-
-                # Conversation turn loop: handles follow-up questions
-                # from Claw without requiring the wake word again.
-                # All tools are passed — the agent's tool router selects
-                # only what's needed via a lightweight manifest call.
-                tools = self.registry.get_openai_tools() or None
-                response = ""
-
-                while not self._shutdown_event.is_set():
-                    # Record until silence — buffer already contains any speech
-                    # the user said after the wake word (continuous utterances
-                    # like "hey jarvis tell me a joke" are preserved)
-                    audio = await capture.record_until_silence()
-                    if len(audio) < self.settings.audio.sample_rate * 0.5:
-                        log.info("Recording too short, ignoring")
-                        break
-
-                    # Transcribe
-                    await self.broadcaster.update_state("processing")
-                    text = await transcriber.transcribe(audio)
-                    if not text.strip():
-                        log.info("Empty transcription, ignoring")
-                        break
-
-                    # Strip wake word prefix from transcription — the audio
-                    # buffer may include speech overlapping the wake word.
-                    text = _strip_wake_prefix(text)
-
-                    await self.broadcaster.update_transcription(text)
-                    log.info("User said: %s", text)
-
-                    # Agent processing (with tools so voice can use get_time etc.)
-                    response = await self.agent.process_utterance(text, tools=tools)
-                    await self.broadcaster.update_response(response)
-                    log.info("Claw responds: %s", response)
-
-                    # TTS playback
-                    if self.tts and self.settings.tts.voice_loop_enabled:
-                        log.info("Starting TTS playback...")
-                        await self.broadcaster.update_state("speaking")
-                        wake.pause()
-                        try:
-                            await self.tts.speak(response)
-                            log.info("TTS playback complete")
-                        except Exception:
-                            log.exception("TTS playback failed")
-                        finally:
-                            wake.resume()
-                            capture.flush()
-                    else:
-                        log.info("TTS skipped (tts=%s, voice_loop=%s)",
-                                 self.tts is not None, self.settings.tts.voice_loop_enabled)
-
-                    # If Claw asked a follow-up question, listen again.
-                    # Check last 10 chars to handle trailing emojis after "?"
-                    if "?" in response.rstrip()[-10:]:
-                        log.info("Follow-up question detected, listening for response")
-                        await self.broadcaster.update_state("listening")
-                        await asyncio.to_thread(play_listening_chime)
-                        continue
-
-                    # Otherwise, conversation turn is done
+                # Record until silence — buffer already contains any speech
+                # the user said after the wake word (continuous utterances
+                # like "hey jarvis tell me a joke" are preserved)
+                audio = await capture.record_until_silence()
+                if len(audio) < self.settings.audio.sample_rate * 0.5:
+                    log.info("Recording too short, ignoring")
                     break
 
-                # Post-conversation fact extraction (background, gated)
-                if response and not (self.agent.last_usage and self.agent.last_usage.timed_out):
-                    self._spawn_bg(self._gated_fact_extraction())
+                # Transcribe
+                await self.broadcaster.update_state("processing")
+                text = await transcriber.transcribe(audio)
+                if not text.strip():
+                    log.info("Empty transcription, ignoring")
+                    break
 
-                await self.broadcaster.update_state("idle")
+                # Strip wake word prefix from transcription — the audio
+                # buffer may include speech overlapping the wake word.
+                text = _strip_wake_prefix(text)
 
-        finally:
-            capture.stop()
+                await self.broadcaster.update_transcription(text)
+                log.info("User said: %s", text)
+
+                # Agent processing (with tools so voice can use get_time etc.)
+                response = await self.agent.process_utterance(text, tools=tools)
+                await self.broadcaster.update_response(response)
+                log.info("Claw responds: %s", response)
+
+                # TTS playback
+                if self.tts and self.settings.tts.voice_loop_enabled:
+                    log.info("Starting TTS playback...")
+                    await self.broadcaster.update_state("speaking")
+                    wake.pause()
+                    try:
+                        await self.tts.speak(response)
+                        log.info("TTS playback complete")
+                    except Exception:
+                        log.exception("TTS playback failed")
+                    finally:
+                        wake.resume()
+                        capture.flush()
+                else:
+                    log.info("TTS skipped (tts=%s, voice_loop=%s)",
+                             self.tts is not None, self.settings.tts.voice_loop_enabled)
+
+                # If Claw asked a follow-up question, listen again.
+                # Check last 10 chars to handle trailing emojis after "?"
+                if "?" in response.rstrip()[-10:]:
+                    log.info("Follow-up question detected, listening for response")
+                    await self.broadcaster.update_state("listening")
+                    await asyncio.to_thread(play_listening_chime)
+                    continue
+
+                # Otherwise, conversation turn is done
+                break
+
+            # Post-conversation fact extraction (background, gated)
+            if response and not (self.agent.last_usage and self.agent.last_usage.timed_out):
+                self._spawn_bg(self._gated_fact_extraction())
+
+            await self.broadcaster.update_state("idle")
 
     async def run_cli_loop(self) -> None:
         """Text input loop for development/testing without audio."""
