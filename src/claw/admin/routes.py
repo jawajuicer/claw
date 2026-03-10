@@ -398,6 +398,62 @@ async def api_delete_conversation(convo_id: str):
     return {"status": "ok"}
 
 
+def _friendly_device_name(raw: str, direction: str = "input") -> str:
+    """Turn raw ALSA/PipeWire device names into human-readable labels.
+
+    direction: "input" or "output" — used for generic labels.
+    """
+    low = raw.lower()
+
+    # PipeWire virtual devices
+    if raw == "default":
+        return "System Default"
+    if raw == "pipewire":
+        return "System Audio (PipeWire)"
+
+    # USB devices — pull brand if present
+    if "usb" in low:
+        # Strip hw:X,Y suffix for cleaner display
+        clean = re.sub(r'\s*\(hw:\d+,\d+\)', '', raw).strip()
+        # Common USB mic brands
+        for brand in ("fifine", "blue", "hyperx", "rode", "samson", "yeti", "snowball"):
+            if brand in low:
+                label = "USB Microphone" if direction == "input" else "USB Audio"
+                return f"{label} ({clean})"
+        label = "USB Microphone" if direction == "input" else "USB Audio"
+        return f"{label} ({clean})" if clean.lower() != "usb audio" else label
+
+    # HDMI outputs
+    if "hdmi" in low:
+        clean = re.sub(r'\s*\(hw:\d+,\d+\)', '', raw).strip()
+        # Shorten "HDA NVidia: HDMI 0" → "HDMI 1 (NVIDIA)"
+        if "nvidia" in low:
+            hdmi_num = re.search(r'HDMI\s*(\d+)', raw)
+            num = int(hdmi_num.group(1)) + 1 if hdmi_num else ""
+            return f"HDMI {num} (NVIDIA GPU)"
+        if "generic" in low or "hd-audio" in low:
+            hdmi_num = re.search(r'HDMI\s*(\d+)', raw)
+            num = int(hdmi_num.group(1)) + 1 if hdmi_num else ""
+            return f"HDMI {num} (Integrated)"
+        return f"HDMI ({clean})"
+
+    # Internal analog (Realtek ALC, etc.)
+    if "analog" in low or "alc" in low:
+        codec = re.search(r'(ALC\w+)', raw)
+        codec_str = f" ({codec.group(1)})" if codec else ""
+        if direction == "input":
+            return f"Internal Microphone{codec_str}"
+        return f"Internal Speaker{codec_str}"
+
+    # Bluetooth
+    if "bluetooth" in low or "bluez" in low:
+        clean = re.sub(r'\s*\(hw:\d+,\d+\)', '', raw).strip()
+        return f"Bluetooth ({clean})"
+
+    # Fallback: strip hw:X,Y and return as-is
+    return re.sub(r'\s*\(hw:\d+,\d+\)', '', raw).strip()
+
+
 @router.get("/api/audio/devices")
 async def api_audio_devices():
     """List available audio input devices via sounddevice."""
@@ -411,7 +467,7 @@ async def api_audio_devices():
             if d["max_input_channels"] > 0:
                 devices.append({
                     "index": i,
-                    "name": d["name"],
+                    "name": _friendly_device_name(d["name"], "input"),
                     "channels": d["max_input_channels"],
                     "sample_rate": int(d["default_samplerate"]),
                 })
@@ -435,7 +491,7 @@ async def api_audio_output_devices():
             if d["max_output_channels"] > 0:
                 devices.append({
                     "index": i,
-                    "name": d["name"],
+                    "name": _friendly_device_name(d["name"], "output"),
                     "channels": d["max_output_channels"],
                     "sample_rate": int(d["default_samplerate"]),
                 })
