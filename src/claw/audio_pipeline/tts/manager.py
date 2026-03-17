@@ -139,8 +139,9 @@ class TTSManager:
             log.info("TTS engine changed to '%s', reinitializing...", cfg.engine)
             self.shutdown()
             self.initialize()
+        elif self._engine:
+            # Update parameters on the existing engine without full reinitialize
+            log.info("TTS config updated, refreshing engine parameters...")
+            self._engine.update_config(cfg)
         else:
-            # Recreate engine with updated params (speed, model, etc.)
-            log.info("TTS config updated, reinitializing engine...")
-            self.shutdown()
             self.initialize()

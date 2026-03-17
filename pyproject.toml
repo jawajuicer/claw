@@ -28,6 +28,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "python-dateutil>=2.9",
     "httpx>=0.27",
+    "segno>=1.6",
 ]
 
 [project.optional-dependencies]
@@ -46,6 +47,9 @@ google = [
 gemini = [
     "google-generativeai>=0.8",
     "cryptography>=42.0",
+]
+all = [
+    "claw[tts,youtube-music,google,gemini]",
 ]
 dev = [
     "pytest>=8.0",

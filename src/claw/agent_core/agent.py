@@ -34,6 +34,9 @@ _KEYWORD_ROUTES: list[tuple[re.Pattern, set[str]]] = [
      {"listen_history"}),
     (re.compile(r"\b(?:search|find|look\s+up)\s+(?:for\s+)?(?:a\s+)?(?:song|music|track)\b", re.I),
      {"search_music"}),
+    (re.compile(r"\b(?:pin|save|remember)\s+this\s+(?:song\s+)?as\b", re.I), {"pin_song"}),
+    (re.compile(r"\b(?:unpin|remove\s+pin)\b", re.I), {"unpin_song"}),
+    (re.compile(r"\b(?:list|show)\s+(?:my\s+)?pins\b", re.I), {"list_pins"}),
     # Weather
     (re.compile(r"\b(?:weather|forecast|temperature|rain|snow|sunny|cloudy|how\s+(?:hot|cold|warm))\b", re.I),
      {"get_weather"}),
@@ -45,15 +48,21 @@ _KEYWORD_ROUTES: list[tuple[re.Pattern, set[str]]] = [
     (re.compile(r"\b(?:memory\s+usage|ram\s+usage|how\s+much\s+(?:memory|ram))\b", re.I),
      {"get_memory_usage"}),
     (re.compile(r"\b(?:system\s+info|system\s+status)\b", re.I), {"get_system_info"}),
-    # Calendar
+    # Calendar — route all Google Calendar tools so the LLM can pick the right one
     (re.compile(r"\b(?:calendar|schedule|events?\s+(?:today|tomorrow|this\s+week)|what.*(?:today|tomorrow).*(?:calendar|schedule))\b", re.I),
-     {"list_events"}),
+     {"list_events", "list_calendars", "search_events", "create_event", "update_event", "delete_event"}),
+    (re.compile(r"\b(?:add|create|put|schedule|book)\b.*\b(?:calendar|event|appointment|meeting)\b", re.I),
+     {"create_event", "list_events", "list_calendars"}),
     # Notes / reminders
     (re.compile(r"\b(?:create|make|add|write|new)\s+(?:a\s+)?note\b", re.I), {"create_note"}),
     (re.compile(r"\b(?:my\s+notes|list\s+notes|show\s+notes)\b", re.I), {"list_notes"}),
     (re.compile(r"\b(?:remind|reminder|set\s+(?:a\s+)?reminder)\b", re.I), {"set_reminder"}),
-    # Email
-    (re.compile(r"\b(?:email|inbox|mail|unread)\b", re.I), {"list_emails"}),
+    # Email — route all Gmail tools so the LLM can pick the right one
+    (re.compile(r"\b(?:email|inbox|mail|unread)\b", re.I),
+     {"list_emails", "send_email", "reply_email", "search_emails", "read_email", "list_labels", "search_contacts"}),
+    # Contact lookup
+    (re.compile(r"\b(?:contact|address\s+(?:for|of)|email\s+(?:for|of|address))\b", re.I),
+     {"search_contacts"}),
     # Gemini web search
     (re.compile(r"\b(?:search\s+the\s+web|google\s+it|look\s+it\s+up\s+online|web\s+search)\b", re.I),
      {"gemini_web_search"}),
@@ -76,6 +85,28 @@ _NO_TOOL_PATTERNS: list[re.Pattern] = [
     re.compile(r"\b(?:meaning\s+of\s+life|how\s+old|where\s+(?:am|are|is))\b", re.I),
 ]
 
+# No-arg music controls — compiled once at module level.
+_SIMPLE_MUSIC_CONTROLS: list[tuple[re.Pattern, str]] = [
+    # Pause: "pause", "pause the music", "pause it"
+    (re.compile(r"^\s*pause\b"), "pause"),
+    # Resume: "resume", "unpause", "continue playing", "keep playing"
+    (re.compile(r"^\s*(?:resume|unpause)\b"), "resume"),
+    (re.compile(r"^\s*(?:continue|keep)\s+playing\b"), "resume"),
+    # Skip/next: "skip", "next", "next song", "skip this", "skip song"
+    (re.compile(r"^\s*skip\b"), "skip"),
+    (re.compile(r"^\s*next\s*$"), "skip"),
+    (re.compile(r"^\s*next\s+(?:song|track|one)\b"), "skip"),
+    # Stop: "stop", "stop playing", "stop the music", "stop music"
+    (re.compile(r"\bstop\b(?:\s+(?:playing|music|the\s+music|it))?$"), "stop"),
+    # Now playing: "what's playing", "now playing", "current song", "what song is this"
+    (re.compile(r"(?:now\s+playing|what(?:'?s|\s+is)\s+playing|current\s+(?:song|track)|what\s+(?:song|track)\s+is\s+this)"), "now_playing"),
+    # Queue: "queue", "show queue", "what's next", "up next", "what's in the queue"
+    (re.compile(r"(?:show\s+)?(?:the\s+)?queue\b"), "get_queue"),
+    (re.compile(r"(?:what(?:'?s|\s+is)|up)\s+next\b"), "get_queue"),
+    # History: "listen history", "recently played", "what did I listen to"
+    (re.compile(r"(?:listen(?:ing)?\s+history|recently\s+played|what\s+did\s+i\s+(?:listen|play))"), "listen_history"),
+]
+
 
 @dataclass
 class UsageStats:
@@ -87,6 +118,7 @@ class UsageStats:
     llm_calls: int = 0
     elapsed_s: float = 0.0
     timed_out: bool = False
+    provider: str = "local"  # which provider actually served
 
     @property
     def tokens_per_sec(self) -> float:
@@ -112,6 +144,7 @@ class UsageStats:
             "llm_calls": self.llm_calls,
             "elapsed_s": round(self.elapsed_s, 2),
             "tokens_per_sec": round(self.tokens_per_sec, 1),
+            "provider": self.provider,
         }
 
 
@@ -131,9 +164,11 @@ class Agent:
         self.llm = llm
         self.retriever = retriever
         self.tool_router = tool_router  # set after MCP init
+        self.usage_tracker = None  # set by main.py after creation
         self._session: ConversationSession | None = None
         self._last_interaction: float = 0.0  # monotonic timestamp of last utterance
         self.last_usage: UsageStats | None = None
+        self._model_override: str | None = None
         self._pending_escalation: str | None = None
 
     @property
@@ -156,13 +191,17 @@ class Agent:
         Returns:
             The final assistant response text.
         """
-        cfg = get_settings().llm
+        if not model and self._model_override:
+            model = self._model_override
+
+        settings = get_settings()
+        cfg = settings.llm
         max_iterations = cfg.max_iterations
         stats = UsageStats()
         t0 = time.monotonic()
 
         # Auto-rotate session if idle too long
-        session_timeout = get_settings().chat.session_timeout
+        session_timeout = settings.chat.session_timeout
         if (
             self._session is not None
             and self._last_interaction > 0
@@ -173,16 +212,34 @@ class Agent:
                 int(t0 - self._last_interaction), session_timeout,
             )
             self._session = None
+            self._pending_escalation = None
 
         # Start or continue a session
         if self._session is None:
             self._session = ConversationSession()
-            memory_ctx = await asyncio.to_thread(self.retriever.retrieve_context, text)
+            try:
+                memory_ctx = await asyncio.wait_for(
+                    asyncio.to_thread(self.retriever.retrieve_context, text),
+                    timeout=5.0,
+                )
+            except asyncio.TimeoutError:
+                log.warning("Memory retrieval timed out")
+                memory_ctx = ""
             self._session.initialize(memory_context=memory_ctx)
 
         self._last_interaction = t0
         self._session.add_user(text)
         self._session.trim_to_fit()
+
+        # Auto-compact if context is getting large
+        if (cfg.compact_threshold > 0
+                and self._session.estimate_tokens() > cfg.context_window * cfg.compact_threshold):
+            try:
+                summary = await self._session.compact(self.llm, keep_recent=cfg.compact_keep_recent)
+                if summary:
+                    log.info("Auto-compacted context: %s", summary[:100])
+            except Exception:
+                log.exception("Auto-compact failed, falling back to trim")
 
         # Store user turn in memory
         self.retriever.store_conversation_turn("user", text, self._session.session_id)
@@ -202,6 +259,14 @@ class Agent:
         if tools:
             tools = await self._route_tools(text, tools)
 
+        # Use fast_model for simple conversational queries (no tools needed)
+        effective_model = model
+        if not effective_model and not tools:
+            fast = cfg.fast_model
+            if fast:
+                effective_model = fast
+                log.info("Using fast model '%s' for no-tool query", fast)
+
         for iteration in range(max_iterations):
             log.info("Agent iteration %d/%d", iteration + 1, max_iterations)
 
@@ -209,7 +274,7 @@ class Agent:
                 response = await self.llm.chat(
                     messages=self._session.get_messages(),
                     tools=tools if tools else None,
-                    model=model,
+                    model=effective_model,
                 )
             except asyncio.TimeoutError:
                 content = "Sorry, I took too long to respond. Please try again."
@@ -217,8 +282,20 @@ class Agent:
                 stats.elapsed_s = time.monotonic() - t0
                 stats.timed_out = True
                 self.last_usage = stats
+                await self._record_usage(stats)
                 return content
+            except RuntimeError as e:
+                if "LLM providers failed" in str(e):
+                    content = "Sorry, I couldn't reach any LLM backend. Please check your configuration."
+                    self._session.add_assistant(content)
+                    stats.elapsed_s = time.monotonic() - t0
+                    stats.timed_out = True
+                    self.last_usage = stats
+                    await self._record_usage(stats)
+                    return content
+                raise
             stats.accumulate(response)
+            stats.provider = self.llm.last_serving_provider
             choice = response.choices[0]
             message = choice.message
 
@@ -230,6 +307,7 @@ class Agent:
                 self.retriever.store_conversation_turn("assistant", content, self._session.session_id)
                 stats.elapsed_s = time.monotonic() - t0
                 self.last_usage = stats
+                await self._record_usage(stats)
                 log.info("Agent response (iteration %d): %s", iteration + 1, content[:100])
                 return content
 
@@ -242,8 +320,11 @@ class Agent:
                 args_str = tool_call.function.arguments
                 try:
                     args = json.loads(args_str) if args_str else {}
-                except json.JSONDecodeError:
-                    args = {}
+                except json.JSONDecodeError as e:
+                    log.warning("Invalid JSON in tool args for %s: %s", name, e)
+                    result_str = f"Error: malformed tool arguments (invalid JSON): {args_str[:200]}"
+                    self._session.add_tool_result(tool_call.id, result_str)
+                    continue
 
                 log.info("Tool call: %s(%s)", name, json.dumps(args)[:200])
 
@@ -262,12 +343,15 @@ class Agent:
 
         # Exhausted iterations — ask LLM for final answer without tools
         log.warning("Agent hit max iterations (%d), forcing final response", max_iterations)
-        response = await self.llm.chat(messages=self._session.get_messages(), model=model)
+        response = await self.llm.chat(messages=self._session.get_messages(), model=effective_model)
         stats.accumulate(response)
+        stats.provider = self.llm.last_serving_provider
         content = response.choices[0].message.content or "I wasn't able to complete that request."
         self._session.add_assistant(content)
+        self.retriever.store_conversation_turn("assistant", content, self._session.session_id)
         stats.elapsed_s = time.monotonic() - t0
         self.last_usage = stats
+        await self._record_usage(stats)
         return content
 
     async def _try_direct_dispatch(self, text: str) -> str | None:
@@ -313,7 +397,7 @@ class Agent:
             r"|(?:gemini[,:]?\s+)",
             text, re.I,
         )
-        if gemini_match:
+        if gemini_match and get_settings().gemini.enabled:
             question = text[gemini_match.end():].strip()
             if question:
                 try:
@@ -322,6 +406,34 @@ class Agent:
                     ))
                 except Exception:
                     log.exception("Direct dispatch gemini_ask failed")
+                    return None
+
+        # pin_song: "pin this as X" / "save this as X" / "remember this as X"
+        pin_match = re.match(
+            r"(?:pin|save|remember)\s+this\s+(?:song\s+)?as\s+(.+)",
+            text, re.I,
+        )
+        if pin_match:
+            phrase = pin_match.group(1).strip()
+            if phrase:
+                try:
+                    return str(await self.tool_router.call_tool("pin_song", {"phrase": phrase}))
+                except Exception:
+                    log.exception("Direct dispatch pin_song failed")
+                    return None
+
+        # unpin_song: "unpin X" / "remove pin X" / "remove pin for X"
+        unpin_match = re.match(
+            r"(?:unpin|remove\s+pin(?:\s+for)?)\s+(.+)",
+            text, re.I,
+        )
+        if unpin_match:
+            phrase = unpin_match.group(1).strip()
+            if phrase:
+                try:
+                    return str(await self.tool_router.call_tool("unpin_song", {"phrase": phrase}))
+                except Exception:
+                    log.exception("Direct dispatch unpin_song failed")
                     return None
 
         # play_song: "play X" / "listen to X" / "put on X"
@@ -341,28 +453,7 @@ class Agent:
                     log.exception("Direct dispatch play_song failed")
                     return None
 
-        # No-arg music controls
-        _simple = [
-            # Pause: "pause", "pause the music", "pause it"
-            (r"^\s*pause\b", "pause"),
-            # Resume: "resume", "unpause", "continue playing", "keep playing"
-            (r"^\s*(?:resume|unpause)\b", "resume"),
-            (r"^\s*(?:continue|keep)\s+playing\b", "resume"),
-            # Skip/next: "skip", "next", "next song", "skip this", "skip song"
-            (r"^\s*skip\b", "skip"),
-            (r"^\s*next\s*$", "skip"),
-            (r"^\s*next\s+(?:song|track|one)\b", "skip"),
-            # Stop: "stop", "stop playing", "stop the music", "stop music"
-            (r"\bstop\b(?:\s+(?:playing|music|the\s+music|it))?$", "stop"),
-            # Now playing: "what's playing", "now playing", "current song", "what song is this"
-            (r"(?:now\s+playing|what.s\s+playing|current\s+(?:song|track)|what\s+(?:song|track)\s+is\s+this)", "now_playing"),
-            # Queue: "queue", "show queue", "what's next", "up next", "what's in the queue"
-            (r"(?:show\s+)?(?:the\s+)?queue\b", "get_queue"),
-            (r"(?:what.s|up)\s+next\b", "get_queue"),
-            # History: "listen history", "recently played", "what did I listen to"
-            (r"(?:listen(?:ing)?\s+history|recently\s+played|what\s+did\s+i\s+(?:listen|play))", "listen_history"),
-        ]
-        for pattern, tool_name in _simple:
+        for pattern, tool_name in _SIMPLE_MUSIC_CONTROLS:
             if re.search(pattern, text_lower):
                 try:
                     return str(await self.tool_router.call_tool(tool_name, {}))
@@ -442,7 +533,11 @@ class Agent:
         if not self.tool_router or not self._LOW_CONFIDENCE_RE.search(content):
             return content
 
-        mode = get_settings().gemini.escalation_mode
+        cfg = get_settings().gemini
+        if not cfg.enabled:
+            return content
+
+        mode = cfg.escalation_mode
         if mode == "off":
             return content
 
@@ -472,28 +567,31 @@ class Agent:
             list of tools if matched, empty list [] for no-tool patterns,
             or None to fall through to LLM routing.
         """
-        # Check no-tool patterns first — conversational queries that never need tools
-        for pattern in _NO_TOOL_PATTERNS:
-            if pattern.search(text):
-                log.info("Tool routing (keyword): no tools needed (conversational)")
-                return []
-
+        # Check keyword routes first — specific tool patterns take priority
         tool_names: set[str] = set()
         for pattern, names in _KEYWORD_ROUTES:
             if pattern.search(text):
                 tool_names.update(names)
 
-        if not tool_names:
-            return None
+        # Strip Gemini tools when Gemini is disabled
+        if tool_names and not get_settings().gemini.enabled:
+            tool_names -= {"gemini_web_search", "gemini_ask"}
 
-        available = {t["function"]["name"] for t in tools}
-        matched = tool_names & available
-        if not matched:
-            return None
+        if tool_names:
+            available = {t["function"]["name"] for t in tools}
+            matched = tool_names & available
+            if matched:
+                selected = [t for t in tools if t["function"]["name"] in matched]
+                log.info("Tool routing (keyword): %s", [t["function"]["name"] for t in selected])
+                return selected
 
-        selected = [t for t in tools if t["function"]["name"] in matched]
-        log.info("Tool routing (keyword): %s", [t["function"]["name"] for t in selected])
-        return selected
+        # No keyword route matched — check no-tool patterns for conversational queries
+        for pattern in _NO_TOOL_PATTERNS:
+            if pattern.search(text):
+                log.info("Tool routing (keyword): no tools needed (conversational)")
+                return []
+
+        return None
 
     async def _route_tools(self, text: str, tools: list[dict]) -> list[dict] | None:
         """Select which tools (if any) are needed for this request.
@@ -506,9 +604,323 @@ class Agent:
         if keyword_result is not None:
             return keyword_result or None  # [] → None (no tools)
 
-        # No keyword match — give the LLM all available tools and let it decide
-        log.info("Tool routing: no keyword match, passing all %d tools to LLM", len(tools))
-        return tools
+        # No keyword match — skip tools rather than bloating the prompt with
+        # all 55 schemas.  The keyword routes cover every registered tool
+        # pattern, so an unmatched query almost certainly doesn't need tools.
+        log.info("Tool routing: no keyword match, skipping tools")
+        return None
+
+    async def process_utterance_stream(
+        self,
+        text: str,
+        tools: list[dict] | None = None,
+        model: str | None = None,
+    ):
+        """Async generator yielding streaming events as dicts.
+
+        Event types emitted:
+        - {"type": "token",       "content": "<partial text>"}
+        - {"type": "tool_start",  "name": "<tool>", "id": "<call_id>"}
+        - {"type": "tool_result", "name": "<tool>", "result": "<...>"}
+        - {"type": "done",        "content": "<full text>",
+           "tools_used": [...], "usage": {...}}
+        - {"type": "error",       "message": "<...>"}
+        """
+        if not model and self._model_override:
+            model = self._model_override
+
+        cfg = get_settings().llm
+        max_iterations = cfg.max_iterations
+        stats = UsageStats()
+        t0 = time.monotonic()
+        tools_used: list[str] = []
+
+        try:
+            # ── Session management (same as process_utterance) ──────────
+            session_timeout = get_settings().chat.session_timeout
+            if (
+                self._session is not None
+                and self._last_interaction > 0
+                and (t0 - self._last_interaction) > session_timeout
+            ):
+                log.info(
+                    "Session expired after %ds idle (timeout=%ds), starting fresh",
+                    int(t0 - self._last_interaction), session_timeout,
+                )
+                self._session = None
+                self._pending_escalation = None
+
+            if self._session is None:
+                self._session = ConversationSession()
+                try:
+                    memory_ctx = await asyncio.wait_for(
+                        asyncio.to_thread(self.retriever.retrieve_context, text),
+                        timeout=5.0,
+                    )
+                except asyncio.TimeoutError:
+                    log.warning("Memory retrieval timed out")
+                    memory_ctx = ""
+                self._session.initialize(memory_context=memory_ctx)
+
+            self._last_interaction = t0
+            self._session.add_user(text)
+            self._session.trim_to_fit()
+
+            # Auto-compact if context is getting large
+            cfg_compact = get_settings().llm
+            if (cfg_compact.compact_threshold > 0
+                    and self._session.estimate_tokens() > cfg_compact.context_window * cfg_compact.compact_threshold):
+                try:
+                    summary = await self._session.compact(self.llm, keep_recent=cfg_compact.compact_keep_recent)
+                    if summary:
+                        log.info("Auto-compacted context (stream): %s", summary[:100])
+                except Exception:
+                    log.exception("Auto-compact failed (stream), falling back to trim")
+
+            self.retriever.store_conversation_turn(
+                "user", text, self._session.session_id
+            )
+
+            # ── Direct dispatch (fast path) ────────────────────────────
+            direct = await self._try_direct_dispatch(text)
+            if direct is not None:
+                self._session.add_assistant(direct)
+                self.retriever.store_conversation_turn(
+                    "assistant", direct, self._session.session_id
+                )
+                stats.elapsed_s = time.monotonic() - t0
+                self.last_usage = stats
+                yield {
+                    "type": "done",
+                    "content": direct,
+                    "tools_used": [],
+                    "usage": stats.to_dict(),
+                }
+                return
+
+            # ── Tool routing ───────────────────────────────────────────
+            if tools:
+                tools = await self._route_tools(text, tools)
+
+            # Use fast_model for simple conversational queries (no tools needed)
+            effective_model = model
+            if not effective_model and not tools:
+                fast = cfg.fast_model
+                if fast:
+                    effective_model = fast
+                    log.info("Using fast model '%s' for no-tool streaming query", fast)
+
+            # ── Streaming agent loop ───────────────────────────────────
+            for iteration in range(max_iterations):
+                log.info("Agent stream iteration %d/%d", iteration + 1, max_iterations)
+
+                content_parts: list[str] = []
+                # Accumulator for incremental tool_call deltas.
+                # Keyed by index, each value: {"id": ..., "name": ..., "arguments": ...}
+                pending_tool_calls: dict[int, dict] = {}
+                chunk_usage = None
+
+                try:
+                    async for chunk in self.llm.chat_stream(
+                        messages=self._session.get_messages(),
+                        tools=tools if tools else None,
+                        model=effective_model,
+                    ):
+                        # Capture usage from the final chunk
+                        if chunk.usage is not None:
+                            chunk_usage = chunk
+
+                        if not chunk.choices:
+                            continue
+
+                        delta = chunk.choices[0].delta
+
+                        # Content tokens
+                        if delta.content:
+                            content_parts.append(delta.content)
+                            yield {"type": "token", "content": delta.content}
+
+                        # Tool call deltas (incremental)
+                        if delta.tool_calls:
+                            for tc_delta in delta.tool_calls:
+                                idx = tc_delta.index
+                                if idx not in pending_tool_calls:
+                                    pending_tool_calls[idx] = {
+                                        "id": "",
+                                        "name": "",
+                                        "arguments": "",
+                                    }
+                                entry = pending_tool_calls[idx]
+                                if tc_delta.id:
+                                    entry["id"] = tc_delta.id
+                                if tc_delta.function:
+                                    if tc_delta.function.name:
+                                        entry["name"] += tc_delta.function.name
+                                    if tc_delta.function.arguments:
+                                        entry["arguments"] += tc_delta.function.arguments
+
+                except asyncio.TimeoutError:
+                    content = "Sorry, I took too long to respond. Please try again."
+                    self._session.add_assistant(content)
+                    stats.elapsed_s = time.monotonic() - t0
+                    stats.timed_out = True
+                    self.last_usage = stats
+                    await self._record_usage(stats)
+                    yield {"type": "error", "message": content}
+                    return
+                except RuntimeError as e:
+                    if "LLM providers failed" in str(e):
+                        content = "Sorry, I couldn't reach any LLM backend. Please check your configuration."
+                        self._session.add_assistant(content)
+                        stats.elapsed_s = time.monotonic() - t0
+                        stats.timed_out = True
+                        self.last_usage = stats
+                        await self._record_usage(stats)
+                        yield {"type": "error", "message": content}
+                        return
+                    raise
+
+                # Accumulate usage from the final chunk
+                if chunk_usage is not None:
+                    stats.accumulate(chunk_usage)
+                stats.provider = self.llm.last_serving_provider
+
+                # ── Stream ended: decide what happened ─────────────────
+                full_content = "".join(content_parts)
+
+                if not pending_tool_calls:
+                    # Content-only response — we're done
+                    full_content = await self._maybe_escalate(
+                        text, full_content, stats, t0
+                    )
+                    self._session.add_assistant(full_content)
+                    self.retriever.store_conversation_turn(
+                        "assistant", full_content, self._session.session_id
+                    )
+                    stats.elapsed_s = time.monotonic() - t0
+                    self.last_usage = stats
+                    await self._record_usage(stats)
+                    yield {
+                        "type": "done",
+                        "content": full_content,
+                        "tools_used": sorted(tools_used),
+                        "usage": stats.to_dict(),
+                    }
+                    return
+
+                # ── Process accumulated tool calls ─────────────────────
+                # Build the assistant message with tool_calls for session
+                assembled_tool_calls = []
+                for idx in sorted(pending_tool_calls):
+                    tc = pending_tool_calls[idx]
+                    assembled_tool_calls.append({
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": tc["arguments"],
+                        },
+                    })
+
+                assistant_msg = {
+                    "role": "assistant",
+                    "content": full_content or None,
+                    "tool_calls": assembled_tool_calls,
+                }
+                self._session.add_tool_call(assistant_msg)
+
+                log.info(
+                    "Agent stream requesting %d tool call(s)",
+                    len(assembled_tool_calls),
+                )
+
+                for tc in assembled_tool_calls:
+                    name = tc["function"]["name"]
+                    args_str = tc["function"]["arguments"]
+                    try:
+                        args = json.loads(args_str) if args_str else {}
+                    except json.JSONDecodeError as e:
+                        log.warning("Invalid JSON in tool args for %s: %s", name, e)
+                        result_str = f"Error: malformed tool arguments (invalid JSON): {args_str[:200]}"
+                        yield {"type": "tool_start", "name": name, "id": tc["id"]}
+                        self._session.add_tool_result(tc["id"], result_str)
+                        yield {
+                            "type": "tool_result",
+                            "name": name,
+                            "result": result_str[:500],
+                        }
+                        continue
+
+                    log.info("Tool call: %s(%s)", name, json.dumps(args)[:200])
+                    yield {"type": "tool_start", "name": name, "id": tc["id"]}
+
+                    if name not in tools_used:
+                        tools_used.append(name)
+
+                    if self.tool_router:
+                        try:
+                            result = await self.tool_router.call_tool(name, args)
+                        except Exception as e:
+                            result = f"Error calling tool '{name}': {e}"
+                            log.exception("Tool call failed: %s", name)
+                    else:
+                        result = (
+                            f"Tool '{name}' is not available "
+                            "(no MCP router configured)"
+                        )
+
+                    result_str = (
+                        str(result) if not isinstance(result, str) else result
+                    )
+                    self._session.add_tool_result(tc["id"], result_str)
+                    log.info("Tool result for %s: %s", name, result_str[:200])
+                    yield {
+                        "type": "tool_result",
+                        "name": name,
+                        "result": result_str[:500],
+                    }
+
+            # ── Exhausted iterations — final forced response (non-streaming) ──
+            log.warning(
+                "Agent stream hit max iterations (%d), forcing final response",
+                max_iterations,
+            )
+            response = await self.llm.chat(
+                messages=self._session.get_messages(), model=effective_model
+            )
+            stats.accumulate(response)
+            stats.provider = self.llm.last_serving_provider
+            content = (
+                response.choices[0].message.content
+                or "I wasn't able to complete that request."
+            )
+            self._session.add_assistant(content)
+            self.retriever.store_conversation_turn(
+                "assistant", content, self._session.session_id
+            )
+            stats.elapsed_s = time.monotonic() - t0
+            self.last_usage = stats
+            await self._record_usage(stats)
+            # Emit the forced content as tokens so the client sees it
+            yield {"type": "token", "content": content}
+            yield {
+                "type": "done",
+                "content": content,
+                "tools_used": sorted(tools_used),
+                "usage": stats.to_dict(),
+            }
+
+        except Exception as exc:
+            log.exception("Streaming agent error")
+            yield {"type": "error", "message": str(exc)}
+
+    async def _record_usage(self, stats: UsageStats) -> None:
+        """Record accumulated usage stats to the usage tracker, if available."""
+        if self.usage_tracker and stats.total_tokens > 0:
+            await self.usage_tracker.record(
+                stats.prompt_tokens, stats.completion_tokens, stats.total_tokens,
+                provider=stats.provider,
+            )
 
     async def extract_facts(self) -> list[str]:
         """Run post-conversation fact extraction."""
@@ -522,3 +934,4 @@ class Agent:
     def new_session(self) -> None:
         """Start a fresh conversation session."""
         self._session = None
+        self._pending_escalation = None

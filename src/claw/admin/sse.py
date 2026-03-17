@@ -39,18 +39,22 @@ class StatusBroadcaster:
             self._subscribers.remove(queue)
             log.debug("SSE subscriber removed (total: %d)", len(self._subscribers))
 
+    # Events that should be persisted in the status snapshot
+    _PERSISTENT_EVENTS = {"status", "transcription", "response", "memory", "mcp", "llm_provider"}
+
     async def broadcast(self, event: str, data: dict) -> None:
         """Send an event to all subscribers."""
-        self._status.update(data)
+        if event in self._PERSISTENT_EVENTS:
+            self._status.update(data)
         message = json.dumps({"event": event, **data})
-        dead: list[asyncio.Queue] = []
+        alive: list[asyncio.Queue] = []
         for queue in self._subscribers:
             try:
                 queue.put_nowait(message)
+                alive.append(queue)
             except asyncio.QueueFull:
-                dead.append(queue)
-        for q in dead:
-            self._subscribers.remove(q)
+                pass  # drop slow subscriber
+        self._subscribers = alive
 
     async def update_state(self, state: str, **extra) -> None:
         """Update the system state and broadcast."""
@@ -67,6 +71,13 @@ class StatusBroadcaster:
 
     async def update_mcp_servers(self, servers: dict) -> None:
         await self.broadcast("mcp", {"mcp_servers": servers})
+
+    async def update_audio_stats(self, stats: dict) -> None:
+        await self.broadcast("audio_stats", {"audio_stats": stats})
+
+    async def broadcast_token(self, token: str, done: bool = False) -> None:
+        """Broadcast a streaming token to SSE subscribers (for Android, etc.)."""
+        await self.broadcast("token", {"token": token, "done": done})
 
     def get_status(self) -> dict:
         return dict(self._status)

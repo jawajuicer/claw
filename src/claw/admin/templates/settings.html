@@ -60,10 +60,16 @@
                 <span class="field-desc">Audio processing chunk size in samples.</span>
             </div>
             <div>
-                <label for="audio.silence_threshold">Silence Sensitivity</label>
-                <input type="number" name="audio.silence_threshold" id="audio.silence_threshold"
-                       value="{{ settings.audio.silence_threshold }}" step="any">
-                <span class="field-desc">Volume level that counts as silence. Lower = more sensitive.</span>
+                <label for="audio.agc_silence_threshold">AGC Silence Threshold</label>
+                <input type="number" name="audio.agc_silence_threshold" id="audio.agc_silence_threshold"
+                       value="{{ settings.audio.agc_silence_threshold }}" step="0.01">
+                <span class="field-desc">Post-AGC RMS below this is treated as silence. Lower = more sensitive. Default: 0.05</span>
+            </div>
+            <div>
+                <label for="audio.agc_gain_ceiling">AGC Gain Ceiling</label>
+                <input type="number" name="audio.agc_gain_ceiling" id="audio.agc_gain_ceiling"
+                       value="{{ settings.audio.agc_gain_ceiling }}" step="0.1">
+                <span class="field-desc">AGC gain above this means boosted noise, not speech. Lower = stricter. Default: 3.5</span>
             </div>
         </div>
     </div>
@@ -227,6 +233,14 @@
                 </label>
                 <span class="field-desc">Auto-speak every response in admin chat.</span>
             </div>
+            <div>
+                <label for="tts.music_announcement">Music Announcement</label>
+                <select name="tts.music_announcement" id="tts.music_announcement">
+                    <option value="before" {% if settings.tts.music_announcement == 'before' %}selected{% endif %}>Announce before playing</option>
+                    <option value="none" {% if settings.tts.music_announcement == 'none' %}selected{% endif %}>Skip announcement</option>
+                </select>
+                <span class="field-desc">How to handle TTS when music starts. "Before" pauses music, speaks, then resumes.</span>
+            </div>
         </div>
         <button type="button" class="advanced-toggle" onclick="toggleAdvanced(this, 'tts-adv')">Show advanced</button>
         <div class="advanced-fields" id="tts-adv">
@@ -351,6 +365,16 @@
                        value="{{ settings.llm.context_window }}">
                 <span class="field-desc">How much conversation the AI can remember at once (in tokens).</span>
             </div>
+            <div>
+                <label for="llm.thinking">Thinking / Reasoning</label>
+                <select name="llm.thinking" id="llm.thinking">
+                    <option value="off" {% if settings.llm.thinking == 'off' %}selected{% endif %}>Off (fastest)</option>
+                    <option value="low" {% if settings.llm.thinking == 'low' %}selected{% endif %}>Low</option>
+                    <option value="medium" {% if settings.llm.thinking == 'medium' %}selected{% endif %}>Medium</option>
+                    <option value="high" {% if settings.llm.thinking == 'high' %}selected{% endif %}>High (most thorough)</option>
+                </select>
+                <span class="field-desc">How much the AI reasons before responding. Higher = smarter but slower.</span>
+            </div>
             <div class="field-full">
                 <label for="llm.system_prompt">Personality</label>
                 <textarea name="llm.system_prompt" id="llm.system_prompt" rows="4">{{ settings.llm.system_prompt }}</textarea>
@@ -376,6 +400,95 @@
                 <input type="number" name="llm.max_iterations" id="llm.max_iterations"
                        value="{{ settings.llm.max_iterations }}">
                 <span class="field-desc">How many times the AI can call tools in a single response.</span>
+            </div>
+        </div>
+    </div>
+
+    {# ── Cloud LLM ─────────────────────────────────────────────────── #}
+    <div class="settings-card">
+        <div class="settings-card-header">
+            <h3>Cloud LLM</h3>
+            <span class="hot-reload-badge">hot-reload</span>
+        </div>
+        <p class="field-desc" style="margin-bottom:1rem;">
+            Optionally use Claude or Gemini as the primary AI brain instead of the local model.
+            Your data is sent to cloud servers when enabled. <strong id="cloud-privacy-indicator"></strong>
+        </p>
+
+        <div class="settings-grid">
+            <div>
+                <label for="cloud-llm-provider">Active Provider</label>
+                <select id="cloud-llm-provider">
+                    <option value="local">Local (private)</option>
+                    <option value="claude">Claude (Anthropic)</option>
+                    <option value="gemini">Gemini (Google)</option>
+                </select>
+                <span class="field-desc">Which AI backend to use. "Local" keeps everything on your machine.</span>
+            </div>
+            <div class="checkbox-field">
+                <label for="cloud_llm.failover_to_local">
+                    <input type="checkbox" name="cloud_llm.failover_to_local" id="cloud_llm.failover_to_local"
+                           {% if settings.cloud_llm.failover_to_local %}checked{% endif %}>
+                    Fall back to local if cloud fails
+                </label>
+                <span class="field-desc">Automatically use the local model if the cloud provider is unavailable.</span>
+            </div>
+        </div>
+
+        {# Claude API Key #}
+        <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid var(--pico-muted-border-color);">
+            <h4 style="margin-bottom:0.5rem;">Claude (Anthropic)</h4>
+            <div class="settings-grid">
+                <div class="field-full">
+                    <label>API Key</label>
+                    <div style="display:flex;gap:0.5rem;align-items:center;">
+                        <input type="password" id="claude-api-key-input"
+                               placeholder="Paste your Claude API key"
+                               style="flex:1;">
+                        <button type="button" id="claude-key-save-btn" class="btn-sm">Save Key</button>
+                        <button type="button" id="claude-key-remove-btn" class="btn-sm btn-danger" style="display:none">Remove</button>
+                    </div>
+                    <span class="field-desc">Get an API key from <a href="https://console.anthropic.com/" target="_blank" rel="noopener">console.anthropic.com</a></span>
+                </div>
+            </div>
+        </div>
+
+        {# Gemini API Key (for cloud LLM) #}
+        <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid var(--pico-muted-border-color);">
+            <h4 style="margin-bottom:0.5rem;">Gemini (Google)</h4>
+            <div class="settings-grid">
+                <div class="field-full">
+                    <label>API Key</label>
+                    <div style="display:flex;gap:0.5rem;align-items:center;">
+                        <input type="password" id="gemini-llm-api-key-input"
+                               placeholder="Paste your Gemini API key"
+                               style="flex:1;">
+                        <button type="button" id="gemini-llm-key-save-btn" class="btn-sm">Save Key</button>
+                        <button type="button" id="gemini-llm-key-remove-btn" class="btn-sm btn-danger" style="display:none">Remove</button>
+                    </div>
+                    <span class="field-desc">Uses the same key as the Gemini API tools above (if already configured).</span>
+                </div>
+            </div>
+        </div>
+
+        <button type="button" class="advanced-toggle" onclick="toggleAdvanced(this, 'cloud-llm-adv')">Show advanced</button>
+        <div class="advanced-fields" id="cloud-llm-adv">
+            <div class="field-full">
+                <label for="cloud-failover-chain">Failover Chain</label>
+                <input type="text" id="cloud-failover-chain" name="cloud_llm.failover_chain"
+                       placeholder="e.g. claude, gemini, local"
+                       value="{{ settings.cloud_llm.failover_chain | join(', ') if settings.cloud_llm.failover_chain else '' }}">
+                <span class="field-desc">Order of providers to try if the primary fails. Comma-separated. Empty = just fall back to local.</span>
+            </div>
+            <div>
+                <label for="cloud-claude-model">Claude Model</label>
+                <input type="text" id="cloud-claude-model" value="{{ settings.cloud_llm.providers.claude.model }}">
+                <span class="field-desc">Which Claude model to use.</span>
+            </div>
+            <div>
+                <label for="cloud-gemini-model">Gemini Model</label>
+                <input type="text" id="cloud-gemini-model" value="{{ settings.cloud_llm.providers.gemini.model }}">
+                <span class="field-desc">Which Gemini model to use.</span>
             </div>
         </div>
     </div>
@@ -526,6 +639,17 @@
                 <input type="text" name="youtube_music.history_file" id="youtube_music.history_file"
                        value="{{ settings.youtube_music.history_file }}">
                 <span class="field-desc">Path to listen history storage.</span>
+            </div>
+        </div>
+        {# ── Pinned Songs ─────────────────────────────────────────── #}
+        <div style="margin-top:1rem; border-top: 1px solid var(--pico-muted-border-color); padding-top:1rem;">
+            <h4 style="margin-bottom:0.5rem;">Pinned Songs</h4>
+            <p class="field-desc" style="margin-bottom:0.75rem;">
+                Pinned phrases always play the exact same track instead of searching.
+                Say "pin this as &lt;phrase&gt;" while a song is playing, or manage pins here.
+            </p>
+            <div id="pins-list">
+                <p class="field-desc"><em>Loading...</em></p>
             </div>
         </div>
     </div>
@@ -899,6 +1023,95 @@
         </div>
     </div>
 
+    {# ── Remote Access ───────────────────────────────────────────────── #}
+    <div class="settings-card">
+        <div class="settings-card-header">
+            <h3>Remote Access</h3>
+            <span class="hot-reload-badge">hot-reload</span>
+        </div>
+        <div class="settings-grid">
+            <div>
+                <label for="remote.audio_output">Audio Output</label>
+                <select name="remote.audio_output" id="remote.audio_output">
+                    <option value="phone" {% if settings.remote.audio_output == 'phone' %}selected{% endif %}>Phone / Android Auto</option>
+                    <option value="computer" {% if settings.remote.audio_output == 'computer' %}selected{% endif %}>Computer Speakers</option>
+                </select>
+                <span class="field-desc">Where to play audio (TTS and music) when using the mobile app. "Phone" streams audio to the device; "Computer" plays through the server's speakers.</span>
+            </div>
+        </div>
+    </div>
+
+    {# ── Webhooks ──────────────────────────────────────────────────── #}
+    <div class="settings-card">
+        <div class="settings-card-header">
+            <h3>Webhooks</h3>
+        </div>
+        <div class="settings-grid">
+            <div class="field-full checkbox-field">
+                <label for="webhook.enabled">
+                    <input type="checkbox" name="webhook.enabled" id="webhook.enabled"
+                           {% if settings.webhook.enabled %}checked{% endif %}>
+                    Enable Webhooks
+                </label>
+                <span class="field-desc">Accept inbound events from external services (Home Assistant, IFTTT, scripts).</span>
+            </div>
+            <div class="field-full">
+                <label>Webhook URL</label>
+                <div style="display:flex;gap:0.5rem;align-items:center;">
+                    <input type="text" id="webhook-url" readonly
+                           value="http://{{ request.headers.get('host', 'localhost:8080') }}/api/webhook"
+                           style="flex:1; font-family:monospace; font-size:0.9em;">
+                    <button type="button" class="btn-sm" onclick="navigator.clipboard.writeText(document.getElementById('webhook-url').value).then(()=>showToast('Copied!','success'))">Copy</button>
+                </div>
+                <span class="field-desc">Send POST requests to this URL with JSON events.</span>
+            </div>
+            <div class="field-full">
+                <label for="webhook.secret">Webhook Secret</label>
+                <div style="display:flex;gap:0.5rem;align-items:center;">
+                    <input type="text" name="webhook.secret" id="webhook.secret"
+                           value="{{ settings.webhook.secret }}" placeholder="Optional HMAC secret"
+                           style="flex:1; font-family:monospace;">
+                    <button type="button" class="btn-sm" onclick="generateWebhookSecret()">Generate</button>
+                </div>
+                <span class="field-desc">HMAC-SHA256 secret for verifying webhook signatures. Leave empty to accept unsigned requests.</span>
+            </div>
+        </div>
+        <button type="button" class="advanced-toggle" onclick="toggleAdvanced(this, 'webhook-adv')">Show advanced</button>
+        <div class="advanced-fields" id="webhook-adv">
+            <div class="field-full">
+                <label for="webhook.allowed_events">Allowed Event Types</label>
+                <input type="text" name="webhook.allowed_events" id="webhook.allowed_events"
+                       value="{{ settings.webhook.allowed_events | join(', ') }}"
+                       placeholder="message, reminder, notification">
+                <span class="field-desc">Comma-separated list of accepted event types.</span>
+            </div>
+            <div class="field-full">
+                <h4>Test Webhook</h4>
+                <p class="field-desc">Send a test notification to verify your webhook is working.</p>
+                <button type="button" class="btn-sm" id="webhook-test-btn" onclick="testWebhook()">Send Test</button>
+                <span id="webhook-test-result" style="margin-left:0.5rem;"></span>
+            </div>
+            <div class="field-full">
+                <h4>Usage Examples</h4>
+                <pre style="font-size:0.8em; overflow-x:auto; padding:0.5rem; background:var(--pico-code-background-color); border-radius:4px;">
+# Send a message
+curl -X POST http://HOST:8080/api/webhook \
+  -H "Content-Type: application/json" \
+  -d '{"type":"message","payload":{"text":"Turn off the lights"},"source":"home-assistant"}'
+
+# Send a notification
+curl -X POST http://HOST:8080/api/webhook \
+  -H "Content-Type: application/json" \
+  -d '{"type":"notification","payload":{"title":"Alert","message":"Front door opened"}}'
+
+# Create a reminder
+curl -X POST http://HOST:8080/api/webhook \
+  -H "Content-Type: application/json" \
+  -d '{"type":"reminder","payload":{"message":"Check laundry","time":"in 30 min"}}'</pre>
+            </div>
+        </div>
+    </div>
+
     {# ── Server ──────────────────────────────────────────────────────── #}
     <div class="settings-card">
         <div class="settings-card-header">
@@ -932,6 +1145,71 @@
     <div id="toast-container"></div>
     <button type="button" id="save-btn">Save Settings</button>
 </form>
+
+{# ── Remote Devices (outside the settings form — separate management) ── #}
+<div class="settings-card" id="devices-card">
+    <div class="settings-card-header">
+        <h3>Remote Devices</h3>
+    </div>
+    <p class="field-desc" style="margin-bottom:1rem;">
+        Register devices for remote access. Each device gets a unique API key shown only once at creation.
+    </p>
+
+    <div id="devices-list">
+        <p class="field-desc"><em>Loading...</em></p>
+    </div>
+
+    <div style="display:flex;gap:0.75rem;align-items:center;margin-top:1rem;">
+        <input type="text" id="new-device-name" placeholder="Device name (e.g. phone, tablet)"
+               style="flex:1;max-width:280px;margin-bottom:0 !important;"
+               pattern="[a-zA-Z0-9_-]{1,32}">
+        <button type="button" id="create-device-btn" class="link-account-btn">Add Device</button>
+    </div>
+</div>
+
+{# ── Device provisioning modal ─────────────────────────────────────── #}
+<dialog id="device-provision-modal" class="provision-modal">
+    <article>
+        <header>
+            <h3 style="margin:0;color:var(--claw-accent);">Device Registered</h3>
+        </header>
+
+        <div class="provision-warning">
+            This information is shown only once. Save it now.
+        </div>
+
+        <div id="provision-qr-section" style="display:none;">
+            <p style="font-size:0.85rem;margin-bottom:0.5rem;font-weight:600;">Scan with the mobile app:</p>
+            <div class="provision-qr-container">
+                <img id="provision-qr-img" alt="Provisioning QR code" />
+            </div>
+        </div>
+
+        <div id="provision-key-section">
+            <p style="font-size:0.85rem;margin-bottom:0.5rem;font-weight:600;">API Key:</p>
+            <div class="provision-code-row">
+                <code id="provision-api-key" class="provision-code"></code>
+                <button type="button" class="btn-copy" onclick="copyProvisionField('provision-api-key')" title="Copy API key">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                </button>
+            </div>
+        </div>
+
+        <div id="provision-code-section" style="display:none;">
+            <p style="font-size:0.85rem;margin-bottom:0.5rem;margin-top:1rem;font-weight:600;">Provisioning Code:</p>
+            <div class="provision-code-row">
+                <code id="provision-code-text" class="provision-code provision-code-long"></code>
+                <button type="button" class="btn-copy" onclick="copyProvisionField('provision-code-text')" title="Copy provisioning code">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                </button>
+            </div>
+        </div>
+
+        <footer style="margin-top:1.5rem;">
+            <button type="button" id="provision-close-btn" style="width:100%;">Done</button>
+        </footer>
+    </article>
+</dialog>
 
 {% endblock %}
 
@@ -1451,6 +1729,12 @@ document.getElementById('save-btn').addEventListener('click', function(e) {
         }
     });
 
+    /* Parse failover_chain as a list */
+    if (data.cloud_llm && typeof data.cloud_llm.failover_chain === 'string') {
+        const raw = data.cloud_llm.failover_chain;
+        data.cloud_llm.failover_chain = raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : [];
+    }
+
     /* Collect wake word model checkboxes */
     const selectedModels = [];
     document.querySelectorAll('.wake-model-cb:checked').forEach(cb => {
@@ -1522,5 +1806,367 @@ document.getElementById('save-btn').addEventListener('click', function(e) {
         btn.textContent = 'Save Settings';
     });
 });
+
+// ── Pinned Songs ──────────────────────────────────────────────────
+function loadPins() {
+    fetch('/api/music/pins')
+        .then(r => r.json())
+        .then(d => {
+            const container = document.getElementById('pins-list');
+            const pins = d.pins || {};
+            const entries = Object.entries(pins);
+            if (entries.length === 0) {
+                container.innerHTML = '<p class="field-desc"><em>No pinned songs yet.</em></p>';
+                return;
+            }
+            let html = '<table role="grid" style="margin:0;"><thead><tr><th>Phrase</th><th>Title</th><th>Artist</th><th></th></tr></thead><tbody>';
+            for (const [phrase, info] of entries) {
+                const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+                html += `<tr>
+                    <td><code>${esc(phrase)}</code></td>
+                    <td>${esc(info.title || '')}</td>
+                    <td>${esc(info.artist || '')}</td>
+                    <td><button type="button" class="outline secondary" style="padding:0.25rem 0.5rem;font-size:0.8rem;" onclick="deletePin('${esc(phrase)}')">Remove</button></td>
+                </tr>`;
+            }
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        })
+        .catch(() => {
+            document.getElementById('pins-list').innerHTML = '<p class="field-desc"><em>Failed to load pins.</em></p>';
+        });
+}
+
+function deletePin(phrase) {
+    fetch('/api/music/pins/' + encodeURIComponent(phrase), { method: 'DELETE' })
+        .then(r => r.json())
+        .then(d => {
+            if (d.error) {
+                showToast(d.error, 'error');
+            } else {
+                showToast('Pin removed', 'success');
+                loadPins();
+            }
+        })
+        .catch(err => showToast('Failed to remove pin: ' + err.message, 'error'));
+}
+
+loadPins();
+
+/* ── Remote Devices ─────────────────────────────────────────────────── */
+
+function copyProvisionField(id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    navigator.clipboard.writeText(el.textContent).then(() => {
+        showToast('Copied to clipboard', 'success');
+    }).catch(() => {
+        /* Fallback: select text */
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        showToast('Select and copy manually', 'error');
+    });
+}
+
+function loadDevices() {
+    fetch('/api/devices')
+        .then(r => r.json())
+        .then(data => {
+            const container = document.getElementById('devices-list');
+            const devices = data.devices || [];
+            if (devices.length === 0) {
+                container.innerHTML = '<p class="field-desc"><em>No devices registered yet.</em></p>';
+                return;
+            }
+            const esc = s => s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;') : '';
+            let html = '<table role="grid" style="margin:0;"><thead><tr><th>Name</th><th>Created</th><th>Last Seen</th><th>VPN IP</th><th></th></tr></thead><tbody>';
+            for (const d of devices) {
+                const created = d.created_at ? new Date(d.created_at).toLocaleDateString() : '-';
+                const seen = d.last_seen ? new Date(d.last_seen).toLocaleString() : 'Never';
+                html += '<tr>'
+                    + '<td><strong>' + esc(d.name) + '</strong></td>'
+                    + '<td style="font-size:0.85rem;color:var(--claw-muted);">' + esc(created) + '</td>'
+                    + '<td style="font-size:0.85rem;color:var(--claw-muted);">' + esc(seen) + '</td>'
+                    + '<td style="font-size:0.85rem;">' + (d.wg_ip ? '<code>' + esc(d.wg_ip) + '</code>' : '-') + '</td>'
+                    + '<td><button type="button" class="outline secondary" style="padding:0.25rem 0.5rem;font-size:0.8rem;" onclick="revokeDevice(\'' + esc(d.name) + '\')">Revoke</button></td>'
+                    + '</tr>';
+            }
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        })
+        .catch(() => {
+            document.getElementById('devices-list').innerHTML = '<p class="field-desc"><em>Failed to load devices.</em></p>';
+        });
+}
+
+function revokeDevice(name) {
+    if (!confirm('Revoke access for device "' + name + '"? This cannot be undone.')) return;
+    fetch('/api/devices/' + encodeURIComponent(name), { method: 'DELETE' })
+        .then(r => r.json())
+        .then(d => {
+            if (d.error) {
+                showToast(d.error, 'error');
+            } else {
+                showToast('Device "' + name + '" revoked', 'success');
+                loadDevices();
+            }
+        })
+        .catch(err => showToast('Failed to revoke device: ' + err.message, 'error'));
+}
+
+document.getElementById('create-device-btn').addEventListener('click', function() {
+    const input = document.getElementById('new-device-name');
+    const name = input.value.trim();
+    if (!name) { showToast('Enter a device name', 'error'); return; }
+    if (!/^[a-zA-Z0-9_-]{1,32}$/.test(name)) {
+        showToast('Name must be 1-32 chars: letters, numbers, hyphens, underscores', 'error');
+        return;
+    }
+
+    const btn = this;
+    btn.disabled = true;
+    btn.textContent = 'Creating...';
+
+    fetch('/api/devices', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ name: name })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.error) {
+            showToast(data.error, 'error');
+            return;
+        }
+
+        input.value = '';
+        loadDevices();
+
+        /* Populate the provisioning modal */
+        document.getElementById('provision-api-key').textContent = data.api_key;
+
+        const qrSection = document.getElementById('provision-qr-section');
+        const codeSection = document.getElementById('provision-code-section');
+
+        if (data.qr_data_uri && data.provisioning_code) {
+            document.getElementById('provision-qr-img').src = data.qr_data_uri;
+            document.getElementById('provision-code-text').textContent = data.provisioning_code;
+            qrSection.style.display = '';
+            codeSection.style.display = '';
+        } else {
+            qrSection.style.display = 'none';
+            codeSection.style.display = 'none';
+        }
+
+        /* Show the modal */
+        const modal = document.getElementById('device-provision-modal');
+        modal.showModal();
+    })
+    .catch(err => showToast('Failed to create device: ' + err.message, 'error'))
+    .finally(() => {
+        btn.disabled = false;
+        btn.textContent = 'Add Device';
+    });
+});
+
+document.getElementById('provision-close-btn').addEventListener('click', function() {
+    document.getElementById('device-provision-modal').close();
+});
+
+loadDevices();
+
+/* ── Cloud LLM management ─────────────────────────────────────── */
+
+// Load current cloud LLM status
+fetch('/api/cloud-llm/status')
+.then(r => r.json())
+.then(data => {
+    // Set active provider dropdown
+    document.getElementById('cloud-llm-provider').value = data.active_provider;
+    updatePrivacyIndicator(data.active_provider);
+
+    // Update Claude key status
+    if (data.providers.claude && data.providers.claude.has_key) {
+        document.getElementById('claude-api-key-input').placeholder = data.providers.claude.key_masked;
+        document.getElementById('claude-key-save-btn').textContent = 'Update';
+        document.getElementById('claude-key-remove-btn').style.display = '';
+    }
+
+    // Update Gemini key status
+    if (data.providers.gemini && data.providers.gemini.has_key) {
+        document.getElementById('gemini-llm-api-key-input').placeholder = data.providers.gemini.key_masked;
+        document.getElementById('gemini-llm-key-save-btn').textContent = 'Update';
+        document.getElementById('gemini-llm-key-remove-btn').style.display = '';
+    }
+})
+.catch(() => {});
+
+function updatePrivacyIndicator(provider) {
+    const el = document.getElementById('cloud-privacy-indicator');
+    if (provider === 'local') {
+        el.textContent = 'Currently: Local (all data stays on your machine)';
+        el.style.color = 'var(--claw-green, #22c55e)';
+    } else {
+        el.textContent = 'Currently: Cloud (' + provider + ') — data is sent externally';
+        el.style.color = 'var(--claw-accent, #ef4444)';
+    }
+}
+
+// Provider switch
+document.getElementById('cloud-llm-provider').addEventListener('change', function() {
+    const provider = this.value;
+    fetch('/api/cloud-llm/switch', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({provider: provider}),
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.status === 'ok') {
+            showToast('Switched to ' + provider, 'success');
+            updatePrivacyIndicator(provider);
+        } else {
+            showToast(d.error || 'Switch failed', 'error');
+        }
+    })
+    .catch(() => showToast('Failed to switch provider', 'error'));
+});
+
+// Claude key save
+document.getElementById('claude-key-save-btn').addEventListener('click', function() {
+    const input = document.getElementById('claude-api-key-input');
+    const key = input.value.trim();
+    if (!key) { showToast('Enter an API key', 'error'); return; }
+
+    fetch('/api/cloud-llm/key', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({provider: 'claude', api_key: key}),
+    })
+    .then(r => r.json().then(d => ({ok: r.ok, data: d})))
+    .then(({ok, data}) => {
+        if (ok) {
+            showToast('Claude API key saved!', 'success');
+            input.value = '';
+            input.placeholder = data.masked;
+            document.getElementById('claude-key-save-btn').textContent = 'Update';
+            document.getElementById('claude-key-remove-btn').style.display = '';
+        } else {
+            showToast(data.error || 'Failed to save', 'error');
+        }
+    })
+    .catch(() => showToast('Failed to save key', 'error'));
+});
+
+// Claude key remove
+document.getElementById('claude-key-remove-btn').addEventListener('click', function() {
+    if (!confirm('Remove Claude API key?')) return;
+    fetch('/api/cloud-llm/key', {
+        method: 'DELETE',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({provider: 'claude'}),
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.status === 'ok') {
+            showToast('Claude API key removed', 'success');
+            document.getElementById('claude-api-key-input').placeholder = 'Paste your Claude API key';
+            document.getElementById('claude-key-save-btn').textContent = 'Save Key';
+            document.getElementById('claude-key-remove-btn').style.display = 'none';
+        }
+    })
+    .catch(() => showToast('Failed to remove key', 'error'));
+});
+
+// Gemini LLM key save
+document.getElementById('gemini-llm-key-save-btn').addEventListener('click', function() {
+    const input = document.getElementById('gemini-llm-api-key-input');
+    const key = input.value.trim();
+    if (!key) { showToast('Enter an API key', 'error'); return; }
+
+    fetch('/api/cloud-llm/key', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({provider: 'gemini', api_key: key}),
+    })
+    .then(r => r.json().then(d => ({ok: r.ok, data: d})))
+    .then(({ok, data}) => {
+        if (ok) {
+            showToast('Gemini API key saved!', 'success');
+            input.value = '';
+            input.placeholder = data.masked;
+            document.getElementById('gemini-llm-key-save-btn').textContent = 'Update';
+            document.getElementById('gemini-llm-key-remove-btn').style.display = '';
+        } else {
+            showToast(data.error || 'Failed to save', 'error');
+        }
+    })
+    .catch(() => showToast('Failed to save key', 'error'));
+});
+
+// Gemini LLM key remove
+document.getElementById('gemini-llm-key-remove-btn').addEventListener('click', function() {
+    if (!confirm('Remove Gemini API key?')) return;
+    fetch('/api/cloud-llm/key', {
+        method: 'DELETE',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({provider: 'gemini'}),
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.status === 'ok') {
+            showToast('Gemini API key removed', 'success');
+            document.getElementById('gemini-llm-api-key-input').placeholder = 'Paste your Gemini API key';
+            document.getElementById('gemini-llm-key-save-btn').textContent = 'Save Key';
+            document.getElementById('gemini-llm-key-remove-btn').style.display = 'none';
+        }
+    })
+    .catch(() => showToast('Failed to remove key', 'error'));
+});
+
+/* ── Webhook helpers ─────────────────────────────────────────────── */
+
+function generateWebhookSecret() {
+    const arr = new Uint8Array(32);
+    crypto.getRandomValues(arr);
+    const hex = Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
+    document.getElementById('webhook.secret').value = hex;
+}
+
+function testWebhook() {
+    const btn = document.getElementById('webhook-test-btn');
+    const result = document.getElementById('webhook-test-result');
+    btn.disabled = true;
+    result.textContent = 'Sending...';
+    result.style.color = '';
+
+    fetch('/api/webhook', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            type: 'notification',
+            payload: {title: 'Test', message: 'Webhook test from settings page', speak: false},
+            source: 'admin-settings',
+        }),
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.status === 'ok') {
+            result.textContent = 'Success!';
+            result.style.color = 'var(--claw-green)';
+        } else {
+            result.textContent = d.error || 'Failed';
+            result.style.color = 'var(--claw-accent)';
+        }
+    })
+    .catch(() => {
+        result.textContent = 'Connection failed';
+        result.style.color = 'var(--claw-accent)';
+    })
+    .finally(() => { btn.disabled = false; });
+}
 </script>
 {% endblock %}

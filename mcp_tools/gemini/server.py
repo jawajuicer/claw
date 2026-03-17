@@ -259,14 +259,17 @@ def gemini_analyze_document(file_path: str, instruction: str = "Summarize this d
     path = Path(file_path)
     if not path.is_absolute():
         path = _PROJECT_ROOT / path
-    if not path.exists():
+    resolved = path.resolve()
+    if not resolved.is_relative_to(_PROJECT_ROOT):
+        return "Access denied: path is outside the project directory"
+    if not resolved.exists():
         return f"File not found: {file_path}"
 
     cfg = _load_config()
     model_name = cfg.get("model", "gemini-2.5-flash")
 
     try:
-        content = path.read_text(errors="replace")
+        content = resolved.read_text(errors="replace")
         model = genai.GenerativeModel(model_name)
         response = model.generate_content(
             f"{instruction}\n\n---\n\n{content}",
@@ -302,15 +305,18 @@ def gemini_describe_image(image_path: str, question: str = "Describe this image.
     path = Path(image_path)
     if not path.is_absolute():
         path = _PROJECT_ROOT / path
-    if not path.exists():
+    resolved = path.resolve()
+    if not resolved.is_relative_to(_PROJECT_ROOT):
+        return "Access denied: path is outside the project directory"
+    if not resolved.exists():
         return f"Image not found: {image_path}"
 
     cfg = _load_config()
     model_name = cfg.get("model", "gemini-2.5-flash")
 
     try:
-        mime_type = mimetypes.guess_type(str(path))[0] or "image/png"
-        image_data = path.read_bytes()
+        mime_type = mimetypes.guess_type(str(resolved))[0] or "image/png"
+        image_data = resolved.read_bytes()
 
         model = genai.GenerativeModel(model_name)
         response = model.generate_content([
@@ -418,7 +424,7 @@ def gemini_usage() -> str:
 
     key = _get_api_key()
     if key:
-        lines.append(f"  API Key: {key[:4]}***{key[-4:]}")
+        lines.append("  API Key: configured")
     else:
         lines.append("  API Key: Not configured")
 

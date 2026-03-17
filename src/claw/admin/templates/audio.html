@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block title %}Audio Diagnostics{% endblock %}
+
+{% block content %}
+<div hx-ext="sse" sse-connect="/api/events">
+
+    <h2>Audio Diagnostics</h2>
+
+    <div class="stat-grid">
+        <div class="card">
+            <h3>RMS Level</h3>
+            <div class="gauge-wrap">
+                <div class="gauge-bar" id="gauge-rms" style="width:0%"></div>
+            </div>
+            <div class="gauge-value" id="val-rms">--</div>
+        </div>
+
+        <div class="card">
+            <h3>AGC Gain</h3>
+            <div class="gauge-wrap">
+                <div class="gauge-bar" id="gauge-agc" style="width:0%"></div>
+            </div>
+            <div class="gauge-value" id="val-agc">--</div>
+        </div>
+
+        <div class="card">
+            <h3>VAD Confidence</h3>
+            <div class="gauge-wrap">
+                <div class="gauge-bar" id="gauge-vad" style="width:0%"></div>
+            </div>
+            <div class="gauge-value" id="val-vad">--</div>
+        </div>
+    </div>
+
+    <div class="stat-grid">
+        <div class="card">
+            <h3>Noise Floor</h3>
+            <div class="gauge-value" id="val-noise">--</div>
+        </div>
+
+        <div class="card">
+            <h3>Device Info</h3>
+            <div id="device-info">
+                <span class="stat-label">Loading...</span>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3>Status</h3>
+            <div id="audio-status">
+                <span class="stat-label">Waiting for data...</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Hidden SSE receiver that triggers JS updates -->
+    <div id="audio-sse-target" sse-swap="audio_stats" style="display:none"></div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+.gauge-wrap {
+    background: var(--pico-muted-border-color);
+    border-radius: 4px;
+    height: 24px;
+    overflow: hidden;
+    margin: 8px 0;
+}
+.gauge-bar {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.3s ease, background-color 0.3s ease;
+    background: var(--claw-green, #4caf50);
+}
+.gauge-value {
+    font-family: monospace;
+    font-size: 1.1rem;
+    text-align: center;
+}
+</style>
+<script>
+(function() {
+    const rmsBar = document.getElementById('gauge-rms');
+    const agcBar = document.getElementById('gauge-agc');
+    const vadBar = document.getElementById('gauge-vad');
+    const rmsVal = document.getElementById('val-rms');
+    const agcVal = document.getElementById('val-agc');
+    const vadVal = document.getElementById('val-vad');
+    const noiseVal = document.getElementById('val-noise');
+    const deviceInfo = document.getElementById('device-info');
+    const statusEl = document.getElementById('audio-status');
+
+    function clamp(v, min, max) { return Math.min(max, Math.max(min, v)); }
+
+    function colorForPct(pct) {
+        if (pct < 30) return 'var(--claw-green, #4caf50)';
+        if (pct < 70) return 'var(--claw-yellow, #ff9800)';
+        return 'var(--claw-accent, #f44336)';
+    }
+
+    function updateGauges(stats) {
+        if (!stats || !stats.active) {
+            statusEl.innerHTML = '<span class="stat-label" style="color:var(--claw-accent)">Audio capture not active</span>';
+            return;
+        }
+        statusEl.innerHTML = '<span class="stat-label" style="color:var(--claw-green, #4caf50)">Active</span>';
+
+        // RMS: 0-0.5 range mapped to 0-100%
+        const rmsPct = clamp(stats.rms / 0.3 * 100, 0, 100);
+        rmsBar.style.width = rmsPct + '%';
+        rmsBar.style.background = colorForPct(rmsPct);
+        rmsVal.textContent = stats.rms.toFixed(5);
+
+        // AGC gain: 0-15 range mapped to 0-100%
+        const agcPct = clamp(stats.agc_gain / 10 * 100, 0, 100);
+        agcBar.style.width = agcPct + '%';
+        agcBar.style.background = stats.agc_gain > 5 ? 'var(--claw-accent)' : stats.agc_gain > 2 ? 'var(--claw-yellow, #ff9800)' : 'var(--claw-green, #4caf50)';
+        agcVal.textContent = stats.agc_gain.toFixed(2) + 'x';
+
+        // VAD: 0-1 mapped to 0-100%
+        if (stats.vad_speech_prob !== undefined) {
+            const vadPct = stats.vad_speech_prob * 100;
+            vadBar.style.width = vadPct + '%';
+            vadBar.style.background = vadPct > (stats.vad_threshold || 0.5) * 100 ? 'var(--claw-green, #4caf50)' : 'var(--pico-muted-color)';
+            vadVal.textContent = (stats.vad_speech_prob * 100).toFixed(1) + '% (threshold: ' + ((stats.vad_threshold || 0.5) * 100).toFixed(0) + '%)';
+        } else {
+            vadBar.style.width = '0%';
+            vadVal.textContent = 'VAD not loaded';
+        }
+
+        noiseVal.textContent = stats.noise_floor ? stats.noise_floor.toFixed(5) : '--';
+
+        // Device info (only update if present)
+        if (stats.sample_rate) {
+            deviceInfo.innerHTML = '<div>Sample rate: ' + stats.sample_rate + ' Hz</div>'
+                + '<div>Block size: ' + stats.block_size + ' samples</div>'
+                + '<div>Device: ' + (stats.device_index !== null ? '#' + stats.device_index : 'default') + '</div>';
+        }
+    }
+
+    // Listen for SSE audio_stats events via MutationObserver on the hidden target
+    const target = document.getElementById('audio-sse-target');
+    const observer = new MutationObserver(function() {
+        try {
+            const raw = target.textContent.trim();
+            if (!raw) return;
+            const data = JSON.parse(raw);
+            if (data.audio_stats) updateGauges(data.audio_stats);
+        } catch(e) {}
+    });
+    observer.observe(target, { childList: true, characterData: true, subtree: true });
+
+    // Also poll on load for initial state
+    fetch('/api/audio/stats').then(r => r.json()).then(updateGauges).catch(function(){});
+})();
+</script>
+{% endblock %}

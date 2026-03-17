@@ -30,7 +30,10 @@ def _get_machine_id() -> bytes:
             continue
     # Fallback: hostname + username
     import socket
-    fallback = f"{socket.gethostname()}-{os.getlogin()}".encode()
+    try:
+        fallback = f"{socket.gethostname()}-{os.getlogin()}".encode()
+    except OSError:
+        fallback = f"{socket.gethostname()}-nouser".encode()
     log.warning("No /etc/machine-id found, using fallback key material")
     return fallback
 
@@ -47,6 +50,7 @@ def _secrets_dir() -> Path:
     from claw.config import PROJECT_ROOT
     d = PROJECT_ROOT / "data" / _SECRETS_DIR_NAME
     d.mkdir(parents=True, exist_ok=True)
+    d.chmod(0o700)
     return d
 
 

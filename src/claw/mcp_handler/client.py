@@ -33,15 +33,22 @@ class MCPClient:
 
         log.info("Connecting to MCP server '%s' at %s", self.name, self.server_script)
 
-        transport = await self._exit_stack.enter_async_context(
-            stdio_client(server_params)
-        )
-        read, write = transport
+        try:
+            transport = await self._exit_stack.enter_async_context(
+                stdio_client(server_params)
+            )
+            read, write = transport
 
-        self.session = await self._exit_stack.enter_async_context(
-            ClientSession(read, write)
-        )
-        await self.session.initialize()
+            self.session = await self._exit_stack.enter_async_context(
+                ClientSession(read, write)
+            )
+            await self.session.initialize()
+        except Exception:
+            await self._exit_stack.aclose()
+            self._exit_stack = None
+            self.session = None
+            raise
+
         log.info("MCP server '%s' connected", self.name)
 
     async def list_tools(self) -> list[dict]:
@@ -68,6 +75,8 @@ class MCPClient:
         result = await self.session.call_tool(name, arguments)
 
         # Extract text from content blocks
+        if not result.content:
+            return ""
         parts = []
         for item in result.content:
             if hasattr(item, "text"):

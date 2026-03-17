@@ -114,6 +114,12 @@ class FishSpeechEngine(TTSEngine):
     def get_sample_rate(self) -> int:
         return self._sample_rate
 
+    def update_config(self, cfg) -> None:
+        self._speed = cfg.speed
+        self._reference_audio = cfg.fish_speech_reference_audio
+        self._reference_text = cfg.fish_speech_reference_text
+        log.info("Fish Speech TTS config updated (speed=%.1f)", cfg.speed)
+
     def shutdown(self) -> None:
         if self._client is not None:
             self._client.close()

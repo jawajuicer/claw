@@ -244,3 +244,74 @@ class TestRecordUntilSilence:
 
         audio = await capture.record_until_silence()
         assert len(audio) > 0
+
+
+class TestGainAwareSilenceDetection:
+    """Test that high AGC gain causes near-threshold RMS to be treated as silence."""
+
+    async def test_high_gain_noise_treated_as_silence(self, capture, settings):
+        """When AGC gain > 5.0, borderline RMS should NOT reset silence counter."""
+        # Simulate: speech chunks (low gain), then high-gain noise near threshold
+        speech_chunk = np.full(1280, 0.1, dtype=np.float32)
+        # Noise chunk with RMS just above threshold — but gain will be high
+        noise_chunk = np.full(1280, 0.051, dtype=np.float32)
+        silent_chunk = np.full(1280, 0.001, dtype=np.float32)
+
+        silence_count = int(settings.audio.silence_duration * settings.audio.sample_rate / settings.audio.block_size) + 5
+
+        # drain_buffer: speech chunks (heard_speech = True)
+        capture.drain_buffer = lambda: [speech_chunk.copy() for _ in range(3)]
+
+        # Set high AGC gain to simulate boosted ambient noise (above 3.5 ceiling)
+        capture._agc_gain = 5.0
+
+        # Feed noise chunks (above threshold but high gain) then true silence
+        feed = [noise_chunk.copy() for _ in range(5)] + [silent_chunk.copy() for _ in range(silence_count)]
+        idx = 0
+
+        def read_remaining():
+            nonlocal idx
+            if idx < len(feed):
+                c = feed[idx]
+                idx += 1
+                return c
+            return None
+
+        capture.read_chunk = read_remaining
+
+        audio = await capture.record_until_silence()
+        # Should stop well before max duration because high-gain noise is treated as silence
+        max_samples = settings.audio.max_record_seconds * settings.audio.sample_rate
+        assert len(audio) < max_samples, "Recording hit max duration — gain-aware silence detection failed"
+
+    async def test_low_gain_speech_not_treated_as_silence(self, capture, settings):
+        """When AGC gain is low, near-threshold RMS should be treated as speech."""
+        speech_chunk = np.full(1280, 0.06, dtype=np.float32)
+        silent_chunk = np.full(1280, 0.001, dtype=np.float32)
+
+        silence_count = int(settings.audio.silence_duration * settings.audio.sample_rate / settings.audio.block_size) + 5
+
+        # drain_buffer: initial speech
+        capture.drain_buffer = lambda: [speech_chunk.copy() for _ in range(3)]
+
+        # Low gain = genuine quiet speech
+        capture._agc_gain = 1.5
+
+        # More speech at low gain, then silence
+        feed = [speech_chunk.copy() for _ in range(5)] + [silent_chunk.copy() for _ in range(silence_count)]
+        idx = 0
+
+        def read_remaining():
+            nonlocal idx
+            if idx < len(feed):
+                c = feed[idx]
+                idx += 1
+                return c
+            return None
+
+        capture.read_chunk = read_remaining
+
+        audio = await capture.record_until_silence()
+        # Should include the speech chunks (not cut short)
+        min_expected = 1280 * 8  # at least drain(3) + speech(5)
+        assert len(audio) >= min_expected

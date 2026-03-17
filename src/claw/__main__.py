@@ -15,9 +15,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--mode",
-        choices=["voice", "cli", "both"],
+        choices=["voice", "cli", "both", "doctor"],
         default="both",
-        help="Run mode: voice (audio + admin), cli (text + admin), both (default)",
+        help="Run mode: voice (audio + admin), cli (text + admin), both (default), doctor (diagnostics)",
     )
     parser.add_argument(
         "--log-level",
@@ -33,6 +33,10 @@ def main() -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
         stream=sys.stderr,
     )
+
+    if args.mode == "doctor":
+        from claw.doctor import run_doctor
+        sys.exit(run_doctor())
 
     from claw.main import Claw
 

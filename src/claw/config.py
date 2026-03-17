@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -32,13 +33,20 @@ class AudioConfig(BaseModel):
         return v
     channels: int = 1
     block_size: int = 1280
-    silence_threshold: float = 0.01
     silence_duration: float = 2.0
+    agc_silence_threshold: float = 0.05  # post-AGC RMS below this = silence
+    agc_gain_ceiling: float = 3.5        # AGC gain above this = boosted noise, not speech
+    vad_threshold: float = 0.5           # Silero VAD speech probability threshold (0.0–1.0)
     max_record_seconds: int = 30
     chime_enabled: bool = True
     chime_volume: float = 0.5       # 0.0–1.0
     chime_frequency: int = 880      # Hz (base tone; chime plays 0.75x then 1x)
     chime_duration_ms: int = 200    # total duration in milliseconds
+
+    @field_validator("chime_volume")
+    @classmethod
+    def clamp_chime_volume(cls, v):
+        return max(0.0, min(1.0, float(v)))
 
 
 class WakeConfig(BaseModel):
@@ -55,6 +63,13 @@ class WhisperConfig(BaseModel):
     language: str = "en"
     beam_size: int = 5
 
+    @field_validator("beam_size")
+    @classmethod
+    def beam_size_positive(cls, v):
+        if v < 1:
+            raise ValueError("beam_size must be >= 1")
+        return v
+
 
 class TTSConfig(BaseModel):
     enabled: bool = True
@@ -65,9 +80,15 @@ class TTSConfig(BaseModel):
     fish_speech_reference_audio: str = ""
     fish_speech_reference_text: str = ""
     speed: float = 1.0  # 0.5-2.0
+
+    @field_validator("speed")
+    @classmethod
+    def clamp_speed(cls, v):
+        return max(0.5, min(2.0, float(v)))
     voice_loop_enabled: bool = True
     admin_chat_enabled: bool = True
     admin_chat_autoplay: bool = False  # auto-play voice responses in admin chat
+    music_announcement: str = "before"  # "before" = pause music, speak, resume; "none" = skip TTS for music
 
     @field_validator("piper_speaker_id", mode="before")
     @classmethod
@@ -76,22 +97,84 @@ class TTSConfig(BaseModel):
             return None
         return v
 
+    @field_validator("music_announcement", mode="before")
+    @classmethod
+    def validate_music_announcement(cls, v):
+        allowed = {"before", "none"}
+        if v not in allowed:
+            raise ValueError(f"music_announcement must be one of {allowed}, got {v!r}")
+        return v
+
 
 class LLMConfig(BaseModel):
     base_url: str = "http://localhost:8081/v1"
     api_key: str = "no-key"
     model: str = "qwen3.5:4b"
+    fast_model: str | None = None  # lighter model for conversational (no-tool) queries
     temperature: float = 0.7
     max_tokens: int = 1024
     max_iterations: int = 5
     context_window: int = 32768
     timeout: int = 45  # seconds per LLM call
-    thinking: bool = False  # enable chain-of-thought (qwen3 models)
+    thinking: str = "off"  # "off", "low", "medium", "high"
+    compact_threshold: float = 0.8  # auto-compact at this % of context_window (0 = disabled)
+    compact_keep_recent: int = 6    # messages to keep verbatim during compaction
+
+    @field_validator("thinking", mode="before")
+    @classmethod
+    def normalize_thinking(cls, v):
+        if v is True:
+            return "medium"
+        if v is False:
+            return "off"
+        if isinstance(v, str) and v.lower() in ("off", "low", "medium", "high"):
+            return v.lower()
+        return "off"
+
     system_prompt: str = (
         "You are The Claw, a helpful voice assistant. You are running locally "
         "on the user's machine. You have access to tools via MCP servers. "
         "Be concise in your responses since they will be spoken aloud."
     )
+
+
+class CloudProvider(BaseModel):
+    """Configuration for a single cloud LLM provider."""
+    enabled: bool = False
+    base_url: str = ""
+    model: str = ""
+    api_key_secret: str = ""  # name in SecretStore (e.g., "claude_api_key")
+    max_tokens: int = 4096
+    temperature: float = 0.7
+    timeout: int = 60
+
+
+class CloudLLMConfig(BaseModel):
+    """Optional cloud LLM backends (Claude, Gemini) as alternatives to local inference."""
+    active_provider: str = "local"  # "local", "claude", "gemini"
+    providers: dict[str, CloudProvider] = Field(default_factory=lambda: {
+        "claude": CloudProvider(
+            base_url="https://api.anthropic.com/v1/",
+            model="claude-sonnet-4-20250514",
+            api_key_secret="claude_api_key",
+            max_tokens=4096,
+        ),
+        "gemini": CloudProvider(
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            model="gemini-2.5-flash",
+            api_key_secret="gemini_api_key",
+            max_tokens=4096,
+        ),
+    })
+    failover_to_local: bool = True  # if cloud fails, fall back to local
+    failover_chain: list[str] = Field(default_factory=lambda: [])  # e.g. ["claude", "local"]; empty = use failover_to_local
+
+    @field_validator("failover_chain", mode="before")
+    @classmethod
+    def parse_failover_chain(cls, v):
+        if isinstance(v, str):
+            return [s.strip() for s in v.split(",") if s.strip()]
+        return v
 
 
 class ComputeConfig(BaseModel):
@@ -112,6 +195,7 @@ class YouTubeMusicConfig(BaseModel):
     enabled: bool = False
     auth_file: str = "data/youtube_music/auth.json"
     history_file: str = "data/youtube_music/history.json"
+    pins_file: str = "data/youtube_music/pins.json"
     auto_radio: bool = True
     default_volume: int = 80
     max_history: int = 500
@@ -156,6 +240,8 @@ class GoogleAuthConfig(BaseModel):
         "https://www.googleapis.com/auth/gmail.compose",
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/calendar",
+        "https://www.googleapis.com/auth/contacts.readonly",
+        "https://www.googleapis.com/auth/directory.readonly",
     ])
     accounts: dict[str, GoogleAccountConfig] = Field(default_factory=dict)
 
@@ -182,6 +268,18 @@ class GeminiConfig(BaseModel):
     log_dir: str = "data/gemini/logs"
 
 
+class SchedulerConfig(BaseModel):
+    enabled: bool = True
+    poll_interval: int = 30  # seconds between checks
+    announce_tts: bool = True  # speak reminders via TTS
+
+
+class UsageConfig(BaseModel):
+    enabled: bool = True
+    persist_file: str = "data/usage.json"
+    persist_interval: int = 60  # seconds
+
+
 class MCPConfig(BaseModel):
     tools_dir: str = "mcp_tools"
     startup_timeout: int = 10
@@ -203,16 +301,52 @@ class MCPConfig(BaseModel):
         return v
 
 
+class WebhookConfig(BaseModel):
+    enabled: bool = False
+    secret: str = ""  # HMAC-SHA256 secret for signature verification; empty = no verification
+    allowed_events: list[str] = Field(
+        default_factory=lambda: ["message", "reminder", "notification"]
+    )
+
+    @field_validator("allowed_events", mode="before")
+    @classmethod
+    def split_csv(cls, v):
+        if isinstance(v, str):
+            return [s.strip() for s in v.split(",") if s.strip()]
+        return v
+
+
 class ChatConfig(BaseModel):
     save_conversations: bool = False
     conversations_dir: str = "data/conversations"
     session_timeout: int = 86400  # seconds of inactivity before auto-rotating session (default 24h)
 
 
+class RemoteConfig(BaseModel):
+    enabled: bool = False
+    audio_output: str = "phone"  # "phone" = audio plays on mobile device; "computer" = plays on server speakers
+    wg_interface: str = "wg0"
+    wg_subnet: str = "10.10.0"
+    wg_port: int = 51820
+    wg_endpoint: str = ""  # Public IP or hostname — set after running setup-wireguard.sh
+
+    @field_validator("audio_output", mode="before")
+    @classmethod
+    def validate_audio_output(cls, v):
+        allowed = {"phone", "computer"}
+        if v not in allowed:
+            raise ValueError(f"audio_output must be one of {allowed}, got {v!r}")
+        return v
+
+
 class AdminConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8080
     log_buffer_size: int = 1000
+    log_format: str = "text"  # "text" or "json"
+    log_file: str = ""  # path to log file (RotatingFileHandler); empty = stdout only
+    auth_enabled: bool = True
+    auth_username: str = "admin"
 
 
 # ── Root settings ───────────────────────────────────────────────────────────
@@ -290,15 +424,20 @@ class Settings(BaseSettings):
     whisper: WhisperConfig = Field(default_factory=WhisperConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    cloud_llm: CloudLLMConfig = Field(default_factory=CloudLLMConfig)
     compute: ComputeConfig = Field(default_factory=ComputeConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
+    scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     weather: WeatherConfig = Field(default_factory=WeatherConfig)
     gemini: GeminiConfig = Field(default_factory=GeminiConfig)
     youtube_music: YouTubeMusicConfig = Field(default_factory=YouTubeMusicConfig)
     notes: NotesConfig = Field(default_factory=NotesConfig)
     local_calendar: LocalCalendarConfig = Field(default_factory=LocalCalendarConfig)
     google_auth: GoogleAuthConfig = Field(default_factory=GoogleAuthConfig)
+    remote: RemoteConfig = Field(default_factory=RemoteConfig)
+    webhook: WebhookConfig = Field(default_factory=WebhookConfig)
+    usage: UsageConfig = Field(default_factory=UsageConfig)
     chat: ChatConfig = Field(default_factory=ChatConfig)
     admin: AdminConfig = Field(default_factory=AdminConfig)
 
@@ -326,10 +465,13 @@ class Settings(BaseSettings):
         return cls()
 
     def save_yaml(self) -> None:
-        """Write current settings back to config.yaml."""
+        """Write current settings back to config.yaml atomically with restricted permissions."""
         data = self.model_dump()
-        with open(CONFIG_YAML, "w") as f:
+        tmp = CONFIG_YAML.with_suffix(".tmp")
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        tmp.replace(CONFIG_YAML)
         log.info("Settings saved to %s", CONFIG_YAML)
 
 

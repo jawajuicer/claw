@@ -42,45 +42,28 @@ def _load_config() -> dict:
 
 
 def _get_owm_key() -> str | None:
-    key = os.environ.get("OWM_API_KEY") or _load_config().get("api_key", "")
+    """Resolve OWM API key. Priority: env var > secret store > config.yaml."""
+    key = os.environ.get("OWM_API_KEY")
+    if key:
+        return key
+    # Try encrypted secret store
+    try:
+        import sys
+        sys.path.insert(0, str(_PROJECT_ROOT / "src"))
+        from claw.secret_store import load as secret_load
+        stored = secret_load("owm_api_key")
+        if stored:
+            return stored
+    except Exception:
+        pass
+    # Fallback to plaintext config
+    key = _load_config().get("api_key", "")
     return key or None
 
 
-_IP_LOCATION: str | None = None  # cached IP geolocation result
-
-
-def _geolocate_by_ip() -> str:
-    """Detect location from public IP address. Cached for process lifetime."""
-    global _IP_LOCATION
-    if _IP_LOCATION is not None:
-        return _IP_LOCATION
-    try:
-        data = _fetch_json("http://ip-api.com/json/?fields=city,regionName,countryCode")
-        city = data.get("city", "")
-        region = data.get("regionName", "")
-        country = data.get("countryCode", "")
-        if city:
-            if country == "US" and region:
-                _IP_LOCATION = f"{city}, {region}"
-            elif region:
-                _IP_LOCATION = f"{city}, {region}, {country}"
-            else:
-                _IP_LOCATION = city
-        else:
-            _IP_LOCATION = ""
-        log.info("IP geolocation resolved to: %s", _IP_LOCATION)
-    except Exception as e:
-        log.warning("IP geolocation failed: %s", e)
-        _IP_LOCATION = ""
-    return _IP_LOCATION
-
-
 def _get_default_location() -> str:
-    """Resolve the user's location. Priority: config override > IP geolocation."""
-    configured = _load_config().get("default_location", "")
-    if configured:
-        return configured
-    return _geolocate_by_ip()
+    """Resolve the user's location from config."""
+    return _load_config().get("default_location", "")
 
 
 def _fetch_json(url: str) -> dict:

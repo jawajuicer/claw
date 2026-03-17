@@ -9,6 +9,7 @@
         <div class="convo-sidebar-header">
             <strong>Conversations</strong>
         </div>
+        <input type="search" id="convo-search" placeholder="Search..." class="convo-search-input">
         <button class="convo-new-btn" onclick="newChat()">+ New Chat</button>
         <div class="convo-list" id="convo-list"></div>
     </div>
@@ -24,6 +25,7 @@
                 <h2>Chat</h2>
             </div>
             <div class="chat-header-right">
+                <span id="provider-badge" class="provider-badge provider-local" title="AI Backend">Local</span>
                 <select id="model-select" class="chat-model-select" title="Model for this conversation">
                     <option value="">Default</option>
                 </select>
@@ -89,6 +91,53 @@ function autoResize() {
 }
 inputEl.addEventListener('input', autoResize);
 
+// Command hints dropdown
+var commandHintsEl = null;
+var knownCommands = [
+    {name: '/help', desc: 'Show available commands'},
+    {name: '/status', desc: 'Show system status'},
+    {name: '/usage', desc: 'Show token usage'},
+    {name: '/think', desc: 'Set thinking level'},
+    {name: '/model', desc: 'Switch model'},
+    {name: '/compact', desc: 'Summarize context'},
+    {name: '/new', desc: 'Start new conversation'},
+];
+
+function showCommandHints() {
+    hideCommandHints();
+    commandHintsEl = document.createElement('div');
+    commandHintsEl.className = 'command-hints';
+    knownCommands.forEach(function(cmd) {
+        var item = document.createElement('div');
+        item.className = 'command-hint-item';
+        item.innerHTML = '<strong>' + cmd.name + '</strong> <span>' + cmd.desc + '</span>';
+        item.onclick = function() {
+            inputEl.value = cmd.name + ' ';
+            hideCommandHints();
+            inputEl.focus();
+        };
+        commandHintsEl.appendChild(item);
+    });
+    var inputBar = document.querySelector('.chat-input-bar');
+    inputBar.style.position = 'relative';
+    inputBar.appendChild(commandHintsEl);
+}
+
+function hideCommandHints() {
+    if (commandHintsEl) {
+        commandHintsEl.remove();
+        commandHintsEl = null;
+    }
+}
+
+inputEl.addEventListener('input', function() {
+    if (this.value === '/') {
+        showCommandHints();
+    } else {
+        hideCommandHints();
+    }
+});
+
 function scrollToBottom() {
     messagesEl.scrollTop = messagesEl.scrollHeight;
 }
@@ -125,13 +174,14 @@ function updateSaveButton() {
     }
 }
 
-function appendMessage(role, content, toolsUsed, usage) {
+function appendMessage(role, content, toolsUsed, usage, isCommand) {
     // Remove welcome message if present
     const welcome = messagesEl.querySelector('.chat-welcome');
     if (welcome) welcome.remove();
 
     const bubble = document.createElement('div');
     bubble.className = 'chat-bubble chat-' + role;
+    if (isCommand) bubble.classList.add('chat-command');
 
     const text = document.createElement('div');
     text.className = 'chat-text';
@@ -158,7 +208,8 @@ function appendMessage(role, content, toolsUsed, usage) {
         if (usage.tokens_per_sec > 0) parts.push(usage.tokens_per_sec + ' tok/s');
         if (usage.total_tokens > 0) parts.push(usage.total_tokens + ' tokens');
         if (usage.llm_calls > 1) parts.push(usage.llm_calls + ' calls');
-        meta.textContent = parts.join(' · ');
+        if (usage.provider && usage.provider !== 'local') parts.push(usage.provider);
+        meta.textContent = parts.join(' \u00b7 ');
         bubble.appendChild(meta);
     }
 
@@ -238,6 +289,70 @@ function hideTyping() {
     if (el) el.remove();
 }
 
+function createStreamingBubble() {
+    // Remove welcome message if present
+    const welcome = messagesEl.querySelector('.chat-welcome');
+    if (welcome) welcome.remove();
+
+    const bubble = document.createElement('div');
+    bubble.className = 'chat-bubble chat-assistant';
+    bubble.id = 'streaming-bubble';
+
+    const text = document.createElement('div');
+    text.className = 'chat-text streaming-cursor';
+    text.id = 'streaming-text';
+    bubble.appendChild(text);
+
+    const tools = document.createElement('div');
+    tools.className = 'chat-tools';
+    tools.id = 'streaming-tools';
+    tools.style.display = 'none';
+    bubble.appendChild(tools);
+
+    messagesEl.appendChild(bubble);
+    scrollToBottom();
+    return bubble;
+}
+
+function finalizeStreamingBubble(content, toolsUsed, usage) {
+    const bubble = document.getElementById('streaming-bubble');
+    if (!bubble) return;
+    bubble.removeAttribute('id');
+
+    const textEl = document.getElementById('streaming-text');
+    if (textEl) {
+        textEl.classList.remove('streaming-cursor');
+        textEl.removeAttribute('id');
+        textEl.textContent = content;
+    }
+
+    const toolsEl = document.getElementById('streaming-tools');
+    if (toolsEl) toolsEl.removeAttribute('id');
+
+    if (usage && usage.elapsed_s) {
+        const meta = document.createElement('div');
+        meta.className = 'chat-meta';
+        const parts = [];
+        parts.push(usage.elapsed_s + 's');
+        if (usage.tokens_per_sec > 0) parts.push(usage.tokens_per_sec + ' tok/s');
+        if (usage.total_tokens > 0) parts.push(usage.total_tokens + ' tokens');
+        if (usage.llm_calls > 1) parts.push(usage.llm_calls + ' calls');
+        if (usage.provider && usage.provider !== 'local') parts.push(usage.provider);
+        meta.textContent = parts.join(' \u00b7 ');
+        bubble.appendChild(meta);
+    }
+
+    // TTS play button
+    if (ttsEnabled && content) {
+        const btn = document.createElement('button');
+        btn.className = 'tts-play-btn';
+        btn.title = 'Play audio';
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+        btn.onclick = function() { playTTS(content, btn); };
+        bubble.appendChild(btn);
+    }
+}
+
 async function sendMessage() {
     if (processing) return;
     const text = inputEl.value.trim();
@@ -249,52 +364,162 @@ async function sendMessage() {
     chatMessages.push({role: 'user', content: text});
     updateSaveButton();
     setProcessing(true);
-    showTyping();
+
+    const chatBody = {message: text};
+    const selectedModel = modelSelect.value;
+    if (selectedModel) chatBody.model = selectedModel;
+
+    let streamOk = false;
 
     try {
-        const chatBody = {message: text};
-        const selectedModel = modelSelect.value;
-        if (selectedModel) chatBody.model = selectedModel;
-
-        const res = await fetch('/api/chat', {
+        const res = await fetch('/api/chat/stream', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(chatBody),
         });
-        hideTyping();
-        if (!res.ok) {
-            const err = await res.json().catch(function() { return {}; });
-            appendMessage('assistant', err.error || 'Request failed.');
-        } else {
-            const data = await res.json();
-            appendMessage('assistant', data.content, data.tools_used, data.usage);
-            chatMessages.push({
-                role: 'assistant',
-                content: data.content,
-                tools_used: data.tools_used,
-                usage: data.usage,
-            });
 
-            // Update context meter from last_prompt_tokens (actual context size)
-            if (data.usage && data.usage.last_prompt_tokens) {
-                updateContextMeter(data.usage.last_prompt_tokens);
-            }
-
-            // Auto-play TTS if enabled
-            if (ttsAutoplay && data.content) {
-                var autoBtn = messagesEl.querySelector('.chat-bubble:last-child .tts-play-btn');
-                if (autoBtn) playTTS(data.content, autoBtn);
-            }
-
-            // Auto-save if enabled
-            if (autoSave) {
-                await saveConversation(true);
-            }
-            updateSaveButton();
+        if (!res.ok || !res.body) {
+            throw new Error('Stream connection failed');
         }
+
+        streamOk = true;
+        createStreamingBubble();
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let fullContent = '';
+        let toolsUsed = [];
+        let finalUsage = null;
+        let done = false;
+
+        while (!done) {
+            const {value, done: readerDone} = await reader.read();
+            if (readerDone) break;
+
+            buffer += decoder.decode(value, {stream: true});
+
+            // Parse SSE lines: "data: {...}\n\n"
+            const lines = buffer.split('\n');
+            buffer = lines.pop(); // keep incomplete line in buffer
+
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed || trimmed.startsWith(':')) continue;
+
+                let payload = trimmed;
+                if (payload.startsWith('data:')) {
+                    payload = payload.slice(5).trim();
+                }
+                if (!payload) continue;
+
+                let event;
+                try {
+                    event = JSON.parse(payload);
+                } catch (e) {
+                    continue;
+                }
+
+                if (event.type === 'token') {
+                    fullContent += event.content;
+                    const textEl = document.getElementById('streaming-text');
+                    if (textEl) {
+                        textEl.textContent = fullContent;
+                        scrollToBottom();
+                    }
+                } else if (event.type === 'tool_start') {
+                    const toolsEl = document.getElementById('streaming-tools');
+                    if (toolsEl) {
+                        toolsEl.style.display = '';
+                        const badge = document.createElement('span');
+                        badge.className = 'tool-badge';
+                        badge.textContent = event.name;
+                        toolsEl.appendChild(badge);
+                    }
+                    if (toolsUsed.indexOf(event.name) === -1) {
+                        toolsUsed.push(event.name);
+                    }
+                } else if (event.type === 'done') {
+                    fullContent = event.content;
+                    toolsUsed = event.tools_used || toolsUsed;
+                    finalUsage = event.usage;
+                    if (event.is_command) {
+                        var streamBubble = document.getElementById('streaming-bubble');
+                        if (streamBubble) streamBubble.classList.add('chat-command');
+                    }
+                    done = true;
+                } else if (event.type === 'error') {
+                    fullContent = event.message || 'An error occurred.';
+                    done = true;
+                }
+            }
+        }
+
+        finalizeStreamingBubble(fullContent, toolsUsed, finalUsage);
+        chatMessages.push({
+            role: 'assistant',
+            content: fullContent,
+            tools_used: toolsUsed,
+            usage: finalUsage,
+        });
+
+        if (finalUsage && finalUsage.last_prompt_tokens) {
+            updateContextMeter(finalUsage.last_prompt_tokens);
+        }
+
+        if (ttsAutoplay && fullContent) {
+            var autoBtn = messagesEl.querySelector('.chat-bubble:last-child .tts-play-btn');
+            if (autoBtn) playTTS(fullContent, autoBtn);
+        }
+
+        if (autoSave) {
+            await saveConversation(true);
+        }
+        updateSaveButton();
+
     } catch (err) {
-        hideTyping();
-        appendMessage('assistant', 'Error: could not reach the server.');
+        // Fallback to non-streaming endpoint
+        if (!streamOk) {
+            try {
+                showTyping();
+                const res = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(chatBody),
+                });
+                hideTyping();
+                if (!res.ok) {
+                    const errData = await res.json().catch(function() { return {}; });
+                    appendMessage('assistant', errData.error || 'Request failed.');
+                } else {
+                    const data = await res.json();
+                    appendMessage('assistant', data.content, data.tools_used, data.usage, data.is_command);
+                    chatMessages.push({
+                        role: 'assistant',
+                        content: data.content,
+                        tools_used: data.tools_used,
+                        usage: data.usage,
+                    });
+                    if (data.usage && data.usage.last_prompt_tokens) {
+                        updateContextMeter(data.usage.last_prompt_tokens);
+                    }
+                    if (ttsAutoplay && data.content) {
+                        var autoBtn = messagesEl.querySelector('.chat-bubble:last-child .tts-play-btn');
+                        if (autoBtn) playTTS(data.content, autoBtn);
+                    }
+                    if (autoSave) {
+                        await saveConversation(true);
+                    }
+                    updateSaveButton();
+                }
+            } catch (fallbackErr) {
+                hideTyping();
+                appendMessage('assistant', 'Error: could not reach the server.');
+            }
+        } else {
+            // Stream was connected but broke mid-stream
+            finalizeStreamingBubble('Error: stream interrupted.', [], null);
+        }
     } finally {
         setProcessing(false);
     }
@@ -358,10 +583,21 @@ function toggleSidebar() {
     }
 }
 
-async function loadConversationList() {
+let convoSearchTimer = null;
+const convoSearchInput = document.getElementById('convo-search');
+
+convoSearchInput.addEventListener('input', function() {
+    clearTimeout(convoSearchTimer);
+    convoSearchTimer = setTimeout(function() {
+        loadConversationList(convoSearchInput.value.trim());
+    }, 300);
+});
+
+async function loadConversationList(query) {
     const listEl = document.getElementById('convo-list');
     try {
-        const res = await fetch('/api/conversations');
+        const url = query ? '/api/conversations/search?q=' + encodeURIComponent(query) : '/api/conversations';
+        const res = await fetch(url);
         const convos = await res.json();
         listEl.innerHTML = '';
         if (convos.length === 0) {
@@ -382,15 +618,23 @@ async function loadConversationList() {
             const date = new Date(c.updated_at);
             meta.textContent = c.message_count + ' msgs · ' + date.toLocaleDateString();
 
+            const exportBtn = document.createElement('a');
+            exportBtn.className = 'convo-export';
+            exportBtn.href = '/api/conversations/' + c.id + '/export?format=md';
+            exportBtn.title = 'Export';
+            exportBtn.textContent = '\u21E3';
+            exportBtn.onclick = function(e) { e.stopPropagation(); };
+
             const del = document.createElement('button');
             del.className = 'convo-delete';
-            del.textContent = '×';
+            del.textContent = '\u00D7';
             del.title = 'Delete';
             del.onclick = function(e) { e.stopPropagation(); deleteConversation(c.id); };
 
             const row = document.createElement('div');
             row.className = 'convo-item-row';
             row.appendChild(title);
+            row.appendChild(exportBtn);
             row.appendChild(del);
 
             item.appendChild(row);
@@ -475,5 +719,43 @@ fetch('/api/models')
 
 // Load conversation list on page load
 loadConversationList();
+
+// Auto-load conversation from ?load= query param (from conversations page)
+(function() {
+    const params = new URLSearchParams(window.location.search);
+    const loadId = params.get('load');
+    if (loadId) {
+        loadConversation(loadId);
+        // Clean URL
+        window.history.replaceState({}, '', '/');
+    }
+})();
+
+// ── Cloud LLM provider badge ──────────────────────────────────────
+
+function updateProviderBadge(provider) {
+    const badge = document.getElementById('provider-badge');
+    if (!badge) return;
+    badge.className = 'provider-badge provider-' + provider;
+    badge.textContent = provider === 'local' ? 'Local' : provider.charAt(0).toUpperCase() + provider.slice(1);
+    badge.title = provider === 'local' ? 'Using local AI (private)' : 'Using ' + provider + ' cloud AI';
+}
+
+// Get initial provider status
+fetch('/api/cloud-llm/status')
+    .then(r => r.json())
+    .then(d => updateProviderBadge(d.active_provider))
+    .catch(() => {});
+
+// Listen for provider changes via SSE (if event source exists on page)
+(function() {
+    try {
+        const evtSource = new EventSource('/api/events');
+        evtSource.addEventListener('llm_provider', function(e) {
+            const data = JSON.parse(e.data);
+            updateProviderBadge(data.provider);
+        });
+    } catch(e) { /* SSE not available, badge will update on page reload */ }
+})();
 </script>
 {% endblock %}

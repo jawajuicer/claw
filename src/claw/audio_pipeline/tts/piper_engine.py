@@ -71,6 +71,17 @@ class PiperTTSEngine(TTSEngine):
     def get_sample_rate(self) -> int:
         return self._sample_rate
 
+    def update_config(self, cfg) -> None:
+        self._length_scale = 1.0 / max(cfg.speed, 0.1)
+        self._speaker_id = cfg.piper_speaker_id
+        if self._voice is not None:
+            from piper.config import SynthesisConfig
+            self._syn_config = SynthesisConfig(
+                speaker_id=self._speaker_id,
+                length_scale=self._length_scale,
+            )
+        log.info("Piper TTS config updated (speed=%.1f, speaker=%s)", cfg.speed, self._speaker_id)
+
     def shutdown(self) -> None:
         self._voice = None
         self._syn_config = None

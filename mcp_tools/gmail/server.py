@@ -17,6 +17,7 @@ mcp = FastMCP("Gmail")
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _CONFIG_YAML = _PROJECT_ROOT / "config.yaml"
 _services: dict[str, object] = {}
+_people_services: dict[str, object] = {}
 
 
 def _load_google_auth() -> dict:
@@ -72,11 +73,34 @@ def _resolve(account: str):
     svc = _get_service(label)
     if svc is None:
         return None, None, (
-            "Gmail is not configured. "
-            "Link a Google account in Settings > Google Accounts, "
-            "then enable Gmail."
+            "Authentication failed — please re-authorize in Settings."
         )
     return svc, acct_cfg, ""
+
+
+def _get_people_service(account_label: str):
+    """Lazy-init a Google People API service for contact lookups."""
+    if account_label in _people_services:
+        return _people_services[account_label]
+
+    from google_auth.auth import get_credentials
+    from googleapiclient.discovery import build
+
+    auth = _load_google_auth()
+    accounts = auth.get("accounts", {})
+    acct = accounts.get(account_label, {})
+
+    creds = get_credentials(
+        credentials_file=auth.get("credentials_file", "data/google/credentials.json"),
+        token_file=acct.get("token_file", ""),
+        scopes=auth.get("scopes", []),
+    )
+    if creds is None:
+        return None
+
+    service = build("people", "v1", credentials=creds)
+    _people_services[account_label] = service
+    return service
 
 
 def _decode_body(payload: dict) -> str:
@@ -203,10 +227,10 @@ def read_email(email_id: str, account: str = "") -> str:
 
 @mcp.tool()
 def send_email(to: str, subject: str, body: str, account: str = "") -> str:
-    """Send an email.
+    """Send an email. IMPORTANT: If you only have a person's name and not their email address, you MUST call search_contacts first to find the correct email. Never guess or make up email addresses.
 
     Args:
-        to: Recipient email address.
+        to: Recipient email address. Must be a real address — use search_contacts to look it up if needed.
         subject: Email subject line.
         body: Email body text.
         account: Google account label (e.g., "personal", "work"). Leave empty to auto-select.
@@ -340,6 +364,81 @@ def list_labels(account: str = "") -> str:
         return "\n".join(lines)
     except Exception as e:
         return f"Error listing labels: {e}"
+
+
+@mcp.tool()
+def search_contacts(name: str, account: str = "") -> str:
+    """Search Google Contacts and company directory for a person by name. Use this to find email addresses before sending emails.
+
+    Args:
+        name: Person's name to search for (e.g., "Larry Fern", "John").
+        account: Google account label (e.g., "personal", "work"). Leave empty to auto-select.
+    """
+    from google_auth.auth import resolve_account
+
+    accounts = _get_accounts()
+    label, err, _ = resolve_account(accounts, "gmail", account)
+    if err:
+        return err
+
+    people_svc = _get_people_service(label)
+    if people_svc is None:
+        return "Contacts not available. Google account may need re-linking."
+
+    results = []
+
+    # Search personal contacts
+    try:
+        resp = people_svc.people().searchContacts(
+            query=name,
+            readMask="names,emailAddresses,organizations",
+            pageSize=10,
+        ).execute()
+        for r in resp.get("results", []):
+            person = r.get("person", {})
+            pnames = person.get("names", [])
+            emails = person.get("emailAddresses", [])
+            orgs = person.get("organizations", [])
+            display = pnames[0].get("displayName", "Unknown") if pnames else "Unknown"
+            email_list = [e.get("value", "") for e in emails if e.get("value")]
+            org = orgs[0].get("name", "") if orgs else ""
+            if email_list:
+                for em in email_list:
+                    entry = f"- {display} <{em}>"
+                    if org:
+                        entry += f" ({org})"
+                    results.append(entry)
+    except Exception as e:
+        results.append(f"(Personal contacts search error: {e})")
+
+    # Search company directory (Google Workspace only)
+    try:
+        resp = people_svc.people().searchDirectoryPeople(
+            query=name,
+            readMask="names,emailAddresses,organizations",
+            sources=["DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE"],
+            pageSize=10,
+        ).execute()
+        for person in resp.get("people", []):
+            pnames = person.get("names", [])
+            emails = person.get("emailAddresses", [])
+            orgs = person.get("organizations", [])
+            display = pnames[0].get("displayName", "Unknown") if pnames else "Unknown"
+            email_list = [e.get("value", "") for e in emails if e.get("value")]
+            org = orgs[0].get("name", "") if orgs else ""
+            for em in email_list:
+                entry = f"- {display} <{em}> [directory]"
+                if org:
+                    entry += f" ({org})"
+                if entry not in results:
+                    results.append(entry)
+    except Exception:
+        pass  # Directory search fails for non-Workspace accounts — that's fine
+
+    if not results:
+        return f"No contacts found matching '{name}'."
+
+    return f"Contacts matching '{name}':\n" + "\n".join(results)
 
 
 if __name__ == "__main__":

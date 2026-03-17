@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Claw icon: stylized claw/grip shape -->
+    <group
+        android:pivotX="54"
+        android:pivotY="54">
+
+        <!-- Center circle -->
+        <path
+            android:fillColor="#FF58A6FF"
+            android:pathData="M54,44 a10,10 0 1,1 0,20 a10,10 0 1,1 0,-20z" />
+
+        <!-- Left claw arm -->
+        <path
+            android:fillColor="#FFE6EDF3"
+            android:strokeColor="#FF58A6FF"
+            android:strokeWidth="2"
+            android:pathData="M38,36 Q30,28 26,34 Q22,40 30,46 Q34,48 38,46"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+
+        <!-- Right claw arm -->
+        <path
+            android:fillColor="#FFE6EDF3"
+            android:strokeColor="#FF58A6FF"
+            android:strokeWidth="2"
+            android:pathData="M70,36 Q78,28 82,34 Q86,40 78,46 Q74,48 70,46"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+
+        <!-- Top claw arm -->
+        <path
+            android:fillColor="#FFE6EDF3"
+            android:strokeColor="#FF58A6FF"
+            android:strokeWidth="2"
+            android:pathData="M48,34 Q48,22 54,20 Q60,22 60,34"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+
+        <!-- Base/stem -->
+        <path
+            android:fillColor="#FF58A6FF"
+            android:pathData="M48,64 L48,76 Q48,80 54,80 Q60,80 60,76 L60,64 Q58,66 54,66 Q50,66 48,64z" />
+
+    </group>
+</vector>

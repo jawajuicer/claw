@@ -5,11 +5,15 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
+from typing import TYPE_CHECKING
 
 import numpy as np
 import sounddevice as sd
 
 from claw.config import get_settings
+
+if TYPE_CHECKING:
+    from claw.audio_pipeline.vad import StreamingVAD
 
 log = logging.getLogger(__name__)
 
@@ -29,21 +33,29 @@ class AudioCapture:
     _AGC_MIN_GAIN = 0.02
     _AGC_MAX_GAIN = 15.0
 
-    def __init__(self) -> None:
+    def __init__(self, vad: StreamingVAD | None = None) -> None:
         cfg = get_settings().audio
         self.sample_rate = cfg.sample_rate
         self.channels = cfg.channels
         self.block_size = cfg.block_size
         self.device_index = cfg.device_index
-        self.silence_threshold = cfg.silence_threshold
         self.silence_duration = cfg.silence_duration
         self.max_record_seconds = cfg.max_record_seconds
+        self._agc_silence_threshold = cfg.agc_silence_threshold
+        self._agc_gain_ceiling = cfg.agc_gain_ceiling
+        self._vad = vad
 
         self._buffer: deque[np.ndarray] = deque(maxlen=self.sample_rate * self.max_record_seconds // self.block_size)
         self._stream: sd.InputStream | None = None
 
         # AGC state
         self._agc_gain = 1.0
+
+        # Audio metrics (updated every chunk by _condition_audio)
+        self.last_rms: float = 0.0
+        self.last_agc_gain: float = 1.0
+        self.noise_floor: float = 0.0
+        self._noise_floor_alpha = 0.01  # slow EMA for noise floor
 
         # High-pass filter state (initialized in start())
         self._hp_sos: np.ndarray | None = None
@@ -74,10 +86,16 @@ class AudioCapture:
             self._agc_gain += alpha * (desired_gain - self._agc_gain)
         chunk = chunk * self._agc_gain
 
+        # Update exposed metrics
+        self.last_rms = rms
+        self.last_agc_gain = self._agc_gain
+        # Noise floor: slow EMA of RMS (tracks ambient noise level)
+        self.noise_floor += self._noise_floor_alpha * (rms - self.noise_floor)
+
         # 3. Soft clipping — compress peaks that exceed ±1.0
         chunk = np.tanh(chunk)
 
-        return chunk
+        return chunk.astype(np.float32)
 
     def _callback(self, indata: np.ndarray, frames: int, time_info: object, status: sd.CallbackFlags) -> None:
         if status:
@@ -151,27 +169,83 @@ class AudioCapture:
             return None
 
     async def record_until_silence(self) -> np.ndarray:
-        """Record audio until silence is detected.
+        """Record audio until speech ends (VAD) or silence is detected (RMS fallback).
+
+        Uses Silero VAD when available to detect actual speech boundaries.
+        Falls back to amplitude-based detection if VAD is not loaded.
 
         Drains any buffered audio first (preserves speech from continuous
-        utterances like "hey jarvis tell me a joke"), then waits for speech
-        to begin before starting silence detection.
+        utterances like "hey claw tell me a joke"), then waits for speech
+        to begin before starting end-of-speech detection.
 
         Returns the full recorded audio as a float32 numpy array.
         """
+        if self._vad is not None:
+            return await self._record_with_vad()
+        return await self._record_with_rms()
+
+    async def _record_with_vad(self) -> np.ndarray:
+        """Record using Silero VAD for end-of-speech detection."""
+        cfg = get_settings().audio
+        vad = self._vad
+        vad.reset()
+
+        frames: list[np.ndarray] = self.drain_buffer()
+        max_chunks = int(cfg.max_record_seconds * cfg.sample_rate / cfg.block_size)
+        # How many consecutive non-speech chunks before we stop
+        silence_chunks_needed = int(cfg.silence_duration * cfg.sample_rate / cfg.block_size)
+        silent_chunks = 0
+
+        # Check buffered audio for speech
+        heard_speech = False
+        for chunk in frames:
+            if vad.is_speech(chunk):
+                heard_speech = True
+
+        log.info("Recording (VAD mode, threshold=%.2f, timeout=%ds, buffered=%d, speech=%s)",
+                 vad.threshold, cfg.max_record_seconds, len(frames), heard_speech)
+
+        while len(frames) < max_chunks:
+            chunk = self.read_chunk()
+            if chunk is None:
+                await asyncio.sleep(0.01)
+                continue
+
+            frames.append(chunk)
+            speech_detected = vad.is_speech(chunk)
+
+            if speech_detected:
+                heard_speech = True
+                silent_chunks = 0
+            elif heard_speech:
+                silent_chunks += 1
+                if silent_chunks >= silence_chunks_needed:
+                    log.info("VAD: speech ended after %d chunks (%.1fs)",
+                             len(frames), len(frames) * cfg.block_size / cfg.sample_rate)
+                    break
+
+        if len(frames) >= max_chunks:
+            log.warning("Recording hit max duration (%ds)", cfg.max_record_seconds)
+
+        audio = np.concatenate(frames) if frames else np.array([], dtype=np.float32)
+        log.info("Recorded %.2f seconds of audio", len(audio) / cfg.sample_rate)
+        return audio
+
+    async def _record_with_rms(self) -> np.ndarray:
+        """Record using RMS amplitude for silence detection (fallback)."""
         cfg = get_settings().audio
 
-        # Drain any buffered audio (speech from before/during chime)
         frames: list[np.ndarray] = self.drain_buffer()
         silent_chunks = 0
         silence_chunks_needed = int(cfg.silence_duration * cfg.sample_rate / cfg.block_size)
         max_chunks = int(cfg.max_record_seconds * cfg.sample_rate / cfg.block_size)
+        threshold = self._agc_silence_threshold
         heard_speech = any(
-            float(np.sqrt(np.mean(c ** 2))) >= cfg.silence_threshold for c in frames
+            float(np.sqrt(np.mean(c ** 2))) >= threshold for c in frames
         )
 
-        log.info("Recording... (silence_threshold=%.4f, timeout=%ds, buffered=%d, speech=%s)",
-                 cfg.silence_threshold, cfg.max_record_seconds, len(frames), heard_speech)
+        log.info("Recording (RMS mode, threshold=%.4f, gain_ceiling=%.1f, timeout=%ds, buffered=%d, speech=%s)",
+                 threshold, self._agc_gain_ceiling, cfg.max_record_seconds, len(frames), heard_speech)
 
         while len(frames) < max_chunks:
             chunk = self.read_chunk()
@@ -182,11 +256,10 @@ class AudioCapture:
             frames.append(chunk)
             rms = float(np.sqrt(np.mean(chunk ** 2)))
 
-            if rms >= cfg.silence_threshold:
+            if rms >= threshold and self._agc_gain < self._agc_gain_ceiling:
                 heard_speech = True
                 silent_chunks = 0
             elif heard_speech:
-                # Only count silence after we've heard speech
                 silent_chunks += 1
                 if silent_chunks >= silence_chunks_needed:
                     log.info("Silence detected after %d chunks", len(frames))
@@ -204,6 +277,17 @@ class AudioCapture:
         chunks = list(self._buffer)
         self._buffer.clear()
         return chunks
+
+    def get_metrics(self) -> dict:
+        """Return current audio metrics for diagnostics."""
+        return {
+            "rms": round(self.last_rms, 6),
+            "agc_gain": round(self.last_agc_gain, 3),
+            "noise_floor": round(self.noise_floor, 6),
+            "sample_rate": self.sample_rate,
+            "block_size": self.block_size,
+            "device_index": self.device_index,
+        }
 
     def flush(self) -> None:
         """Discard all buffered audio."""

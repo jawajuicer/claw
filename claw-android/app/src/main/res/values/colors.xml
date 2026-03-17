@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="claw_background">#FF0D1117</color>
+    <color name="claw_surface">#FF161B22</color>
+    <color name="claw_surface_variant">#FF21262D</color>
+    <color name="claw_accent">#FF58A6FF</color>
+    <color name="claw_accent_dim">#FF388BFD</color>
+    <color name="claw_text_primary">#FFE6EDF3</color>
+    <color name="claw_text_secondary">#FF8B949E</color>
+    <color name="claw_error">#FFF85149</color>
+    <color name="claw_success">#FF3FB950</color>
+    <color name="claw_warning">#FFD29922</color>
+    <color name="claw_border">#FF30363D</color>
+    <color name="claw_user_bubble">#FF1F6FEB</color>
+    <color name="claw_assistant_bubble">#FF21262D</color>
+</resources>

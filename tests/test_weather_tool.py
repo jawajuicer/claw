@@ -13,10 +13,8 @@ def _reset_weather_module():
     import mcp_tools.weather.server as ws
 
     ws._config = None
-    ws._IP_LOCATION = None
     yield
     ws._config = None
-    ws._IP_LOCATION = None
 
 
 class TestLoadConfig:
@@ -60,13 +58,12 @@ class TestGetDefaultLocation:
         loc = ws._get_default_location()
         assert loc == "New York"
 
-    def test_falls_back_to_ip_geolocation(self):
+    def test_returns_empty_when_no_location_configured(self):
         import mcp_tools.weather.server as ws
 
         ws._config = {"default_location": ""}
-        with patch.object(ws, "_geolocate_by_ip", return_value="Akron, Ohio"):
-            loc = ws._get_default_location()
-            assert loc == "Akron, Ohio"
+        loc = ws._get_default_location()
+        assert loc == ""
 
 
 class TestGetWeather:
@@ -76,7 +73,6 @@ class TestGetWeather:
         import mcp_tools.weather.server as ws
 
         ws._config = {"default_location": ""}
-        ws._IP_LOCATION = ""
         result = ws.get_weather("")
         assert "could not determine" in result.lower()
 
@@ -141,7 +137,6 @@ class TestGetForecast:
         import mcp_tools.weather.server as ws
 
         ws._config = {"default_location": ""}
-        ws._IP_LOCATION = ""
         result = ws.get_forecast("", days=3)
         assert "could not determine" in result.lower()
 

@@ -191,9 +191,10 @@ class TestStats:
         assert stats == {"conversations": 42, "facts": 42, "categories": 42}
 
     def test_stats_uninitialized(self, settings):
+        import pytest
         from claw.memory_engine.store import MemoryStore
 
         with patch("claw.memory_engine.store.get_settings", return_value=settings):
             store = MemoryStore()
-        stats = store.stats()
-        assert stats == {"conversations": 0, "facts": 0, "categories": 0}
+        with pytest.raises(RuntimeError, match="not initialized"):
+            store.stats()

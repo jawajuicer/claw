@@ -1,0 +1,10 @@
+{
+  "name": "The Claw",
+  "short_name": "Claw",
+  "description": "Private voice AI assistant — zero cloud audio",
+  "start_url": "/app",
+  "display": "standalone",
+  "background_color": "#0d1117",
+  "theme_color": "#1a1f2e",
+  "orientation": "any"
+}

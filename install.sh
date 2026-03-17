@@ -9,6 +9,25 @@ VENV_DIR="${INSTALL_DIR}/.venv"
 DATA_DIR="${INSTALL_DIR}/data"
 SERVICE_NAME="claw"
 
+if [[ "${1:-}" == "--update" ]]; then
+    echo "=== The Claw — Quick Update ==="
+    source "${VENV_DIR}/bin/activate"
+    cd "${INSTALL_DIR}"
+    git pull
+    pip install -e . -q
+    systemctl --user restart claw
+    echo "Waiting for health check..."
+    for i in $(seq 1 30); do
+        if curl -sf http://localhost:8080/api/health > /dev/null 2>&1; then
+            echo "Health check passed!"
+            exit 0
+        fi
+        sleep 1
+    done
+    echo "WARNING: Health check did not pass within 30s"
+    exit 1
+fi
+
 echo "=== The Claw — Installer ==="
 echo "Install directory: ${INSTALL_DIR}"
 
@@ -156,7 +175,14 @@ pip install -e "${INSTALL_DIR}[google]" -q || echo "Google deps failed (optional
 
 echo ""
 echo "--- Creating data directories ---"
-mkdir -p "${DATA_DIR}"/{chromadb,models,logs,youtube_music,notes,calendar,google,google/tokens,models/wake,models/tts/piper}
+mkdir -p "${DATA_DIR}"/{chromadb,models,logs,youtube_music,notes,calendar,google,google/tokens,secrets,models/wake,models/tts/piper}
+
+# Harden permissions on sensitive directories and files
+chmod 700 "${DATA_DIR}/secrets/"
+chmod 700 "${DATA_DIR}/google/tokens/"
+[ -f "${DATA_DIR}/google/credentials.json" ] && chmod 600 "${DATA_DIR}/google/credentials.json"
+[ -f "${DATA_DIR}/youtube_music/auth.json" ] && chmod 600 "${DATA_DIR}/youtube_music/auth.json"
+[ -f "${INSTALL_DIR}/config.yaml" ] && chmod 600 "${INSTALL_DIR}/config.yaml"
 
 # ── Environment file ────────────────────────────────────────────────────────
 

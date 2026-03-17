@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">The Claw</string>
+    <string name="notification_channel_name">Wake Word Listener</string>
+    <string name="notification_channel_description">Persistent notification for always-on wake word detection</string>
+    <string name="notification_title">The Claw is listening</string>
+    <string name="notification_text">Waiting for \"Hey Claw\"</string>
+    <string name="notification_text_processing">Processing your request\u2026</string>
+    <string name="setup_title">Welcome to The Claw</string>
+    <string name="setup_subtitle">Connect to your Claw server</string>
+    <string name="server_url_label">Server URL</string>
+    <string name="server_url_hint">http://10.10.0.1:8080</string>
+    <string name="api_key_label">API Key</string>
+    <string name="api_key_hint">Enter your API key</string>
+    <string name="connect_button">Connect</string>
+    <string name="connecting_text">Connecting\u2026</string>
+    <string name="connection_failed">Connection failed</string>
+    <string name="chat_hint">Ask The Claw something\u2026</string>
+    <string name="send_button">Send</string>
+    <string name="voice_button_description">Voice input</string>
+    <string name="mic_permission_rationale">Microphone access is required for wake word detection and voice commands.</string>
+    <string name="notification_permission_rationale">Notification permission is required for the always-on listening service.</string>
+    <string name="wake_word_active">Listening for \"Hey Claw\"</string>
+    <string name="wake_word_disabled">Wake word detection disabled</string>
+    <string name="wake_word_no_models">Wake word models not installed</string>
+    <string name="recording">Recording\u2026</string>
+    <string name="processing">Processing\u2026</string>
+    <string name="media_root_title">The Claw Music</string>
+    <string name="media_recent_title">Recent</string>
+    <string name="settings_label">Settings</string>
+    <string name="disconnect_label">Disconnect</string>
+</resources>

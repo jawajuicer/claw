@@ -203,3 +203,29 @@ class TestGoogleConfigMigration:
         }
         result = _migrate_google_config(data)
         assert "work" in result["google_auth"]["accounts"]
+
+
+class TestMusicAnnouncementConfig:
+    """Test tts.music_announcement field and validator."""
+
+    def test_default_music_announcement(self, settings):
+        assert settings.tts.music_announcement == "before"
+
+    def test_music_announcement_none_valid(self):
+        from claw.config import TTSConfig
+
+        c = TTSConfig(music_announcement="none")
+        assert c.music_announcement == "none"
+
+    def test_music_announcement_before_valid(self):
+        from claw.config import TTSConfig
+
+        c = TTSConfig(music_announcement="before")
+        assert c.music_announcement == "before"
+
+    def test_music_announcement_invalid_rejected(self):
+        import pytest
+        from claw.config import TTSConfig
+
+        with pytest.raises(ValueError, match="music_announcement"):
+            TTSConfig(music_announcement="after")

@@ -60,5 +60,86 @@
         </div>
     </div>
 
+    <div class="card" id="usage-card">
+        <h3>Token Usage</h3>
+        <div class="stat-grid" id="usage-stats">
+            <div class="stat">
+                <div class="stat-value" id="usage-today-tokens">--</div>
+                <div class="stat-label">Today's Tokens</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" id="usage-today-calls">--</div>
+                <div class="stat-label">Today's Calls</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" id="usage-session-tokens">--</div>
+                <div class="stat-label">Session Tokens</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" id="usage-cost">--</div>
+                <div class="stat-label">Est. Cloud Cost</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>Tool Usage</h3>
+        <div id="tool-stats">
+            <span class="stat-label">Loading...</span>
+        </div>
+    </div>
+
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    async function loadToolStats() {
+        try {
+            const res = await fetch('/api/tools/stats');
+            const data = await res.json();
+            const el = document.getElementById('tool-stats');
+            const tools = data.tools || {};
+            const keys = Object.keys(tools);
+            if (keys.length === 0) {
+                el.innerHTML = '<span class="stat-label">No tool calls recorded</span>';
+                return;
+            }
+            let html = '<table role="grid" style="font-size:0.85rem"><thead><tr><th>Tool</th><th>Calls</th><th>Avg</th><th>Errors</th></tr></thead><tbody>';
+            keys.forEach(function(name) {
+                const t = tools[name];
+                const errClass = t.errors > 0 ? ' style="color:var(--claw-accent)"' : '';
+                html += '<tr><td>' + name + '</td><td>' + t.count + '</td><td>' + t.avg_latency_s + 's</td><td' + errClass + '>' + t.errors + '</td></tr>';
+            });
+            html += '</tbody></table>';
+            el.innerHTML = html;
+        } catch(e) {
+            document.getElementById('tool-stats').innerHTML = '<span class="stat-label">Failed to load</span>';
+        }
+    }
+    loadToolStats();
+    setInterval(loadToolStats, 30000);
+
+    async function loadUsage() {
+        try {
+            const res = await fetch('/api/usage');
+            const d = await res.json();
+            const today = d.today || {};
+            const session = d.session || {};
+            document.getElementById('usage-today-tokens').textContent =
+                (today.total_tokens || 0).toLocaleString();
+            document.getElementById('usage-today-calls').textContent =
+                (today.calls || 0).toLocaleString();
+            document.getElementById('usage-session-tokens').textContent =
+                (session.total_tokens || 0).toLocaleString();
+            var cost = (today.cost && today.cost.total) || 0;
+            document.getElementById('usage-cost').textContent =
+                cost > 0 ? '$' + cost.toFixed(4) : 'Free (local)';
+        } catch(e) {}
+    }
+    loadUsage();
+    setInterval(loadUsage, 30000);
+})();
+</script>
 {% endblock %}

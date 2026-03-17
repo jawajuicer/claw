@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -35,10 +36,12 @@ def get_credentials(credentials_file: str, token_file: str, scopes: list[str]):
     if creds and creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
-            token_path.write_text(creds.to_json())
+            fd = os.open(str(token_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(creds.to_json())
             log.info("Google OAuth token refreshed")
         except Exception:
-            log.exception("Failed to refresh Google OAuth token")
+            log.exception("Failed to refresh Google OAuth token — re-authorize in Settings")
             creds = None
 
     return creds

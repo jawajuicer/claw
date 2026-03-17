@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.ClawAssistant" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/claw_background</item>
+        <item name="android:statusBarColor">@color/claw_background</item>
+        <item name="android:navigationBarColor">@color/claw_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

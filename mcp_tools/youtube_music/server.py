@@ -58,6 +58,9 @@ def _get_player():
     history_file = cfg.get("history_file", "data/youtube_music/history.json")
     if not Path(history_file).is_absolute():
         history_file = str(_PROJECT_ROOT / history_file)
+    pins_file = cfg.get("pins_file", "data/youtube_music/pins.json")
+    if not Path(pins_file).is_absolute():
+        pins_file = str(_PROJECT_ROOT / pins_file)
 
     _player = MusicPlayer(
         auth_file=auth_file,
@@ -68,6 +71,7 @@ def _get_player():
         max_search_results=cfg.get("max_search_results", 5),
         client_id=cfg.get("client_id", ""),
         client_secret=cfg.get("client_secret", ""),
+        pins_file=pins_file,
     )
     return _player
 
@@ -90,6 +94,18 @@ def play_song(title: str, artist: str = "") -> str:
         return _NOT_CONFIGURED
     query = f"{title} {artist}".strip() if artist else title
     return _get_player().play_search(query)
+
+
+@mcp.tool()
+def play_playlist(playlist_id: str) -> str:
+    """Play all tracks from a YouTube Music playlist.
+
+    Args:
+        playlist_id: The YouTube Music playlist ID (e.g. from a playlist URL).
+    """
+    if not _is_enabled():
+        return _NOT_CONFIGURED
+    return _get_player().play_playlist(playlist_id)
 
 
 @mcp.tool()
@@ -233,6 +249,66 @@ def listen_history(limit: int = 20) -> str:
     for i, h in enumerate(history, 1):
         source_tag = " [radio]" if h.get("source") == "auto_radio" else ""
         lines.append(f"{i}. {h['title']} by {h['artist']}{source_tag} — {h['played_at']}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def pin_song(phrase: str) -> str:
+    """Pin the currently playing song to a phrase for instant playback later.
+
+    When you say "play <phrase>" in the future, it will always play this exact track
+    instead of searching. Use this after playing a song to save it.
+
+    Args:
+        phrase: The phrase to associate with the current song (e.g. "mario 64 ost").
+    """
+    if not _is_enabled():
+        return _NOT_CONFIGURED
+    return _get_player().pin_song(phrase)
+
+
+@mcp.tool()
+def pin_playlist(phrase: str, playlist_id: str, title: str = "") -> str:
+    """Pin a YouTube Music playlist to a phrase for instant playback later.
+
+    When you say "play <phrase>" in the future, it will play this entire playlist.
+
+    Args:
+        phrase: The phrase to associate with the playlist (e.g. "mario 64 ost").
+        playlist_id: The YouTube Music playlist ID.
+        title: Optional human-readable name for the playlist.
+    """
+    if not _is_enabled():
+        return _NOT_CONFIGURED
+    return _get_player().pin_playlist(phrase, playlist_id, title)
+
+
+@mcp.tool()
+def unpin_song(phrase: str) -> str:
+    """Remove a pinned phrase so it goes back to searching normally.
+
+    Args:
+        phrase: The pinned phrase to remove.
+    """
+    if not _is_enabled():
+        return _NOT_CONFIGURED
+    return _get_player().unpin_song(phrase)
+
+
+@mcp.tool()
+def list_pins() -> str:
+    """List all pinned phrases and their associated songs."""
+    if not _is_enabled():
+        return _NOT_CONFIGURED
+    pins = _get_player().get_pins()
+    if not pins:
+        return "No pinned songs"
+    lines = ["Pinned songs:"]
+    for phrase, info in pins.items():
+        if "playlist_id" in info:
+            lines.append(f"  \"{phrase}\" → playlist: {info['title']}")
+        else:
+            lines.append(f"  \"{phrase}\" → {info['title']} by {info['artist']}")
     return "\n".join(lines)
 
 

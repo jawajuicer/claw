@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -10,6 +11,8 @@ from pathlib import Path
 import yaml
 from dateutil import parser as dateutil_parser
 from mcp.server.fastmcp import FastMCP
+
+log = logging.getLogger(__name__)
 
 mcp = FastMCP("LocalCalendar")
 
@@ -58,7 +61,7 @@ def _write_events(events: list[dict]) -> None:
     _storage_file().write_text(json.dumps(events, indent=2))
 
 
-def _parse_datetime(s: str) -> str:
+def _parse_datetime(s: str) -> str | None:
     """Parse a date/time string into ISO format."""
     lower = s.strip().lower()
     now = datetime.now()
@@ -74,12 +77,13 @@ def _parse_datetime(s: str) -> str:
         dt = dateutil_parser.parse(s, fuzzy=True)
         return dt.isoformat()
     except (ValueError, TypeError):
-        return s
+        log.warning("Could not parse datetime: %r", s)
+        return None
 
 
 @mcp.tool()
-def add_event(title: str, start: str, end: str = "", description: str = "") -> str:
-    """Add a calendar event.
+def local_add_event(title: str, start: str, end: str = "", description: str = "") -> str:
+    """Add an event to the LOCAL offline calendar (private, not synced to Google). Only use this when the user explicitly asks for a local/private/offline event.
 
     Args:
         title: Event title.
@@ -90,8 +94,12 @@ def add_event(title: str, start: str, end: str = "", description: str = "") -> s
     if not _is_enabled():
         return _NOT_ENABLED
     start_iso = _parse_datetime(start)
+    if start_iso is None:
+        return f"Could not parse start time: '{start}'"
     if end:
         end_iso = _parse_datetime(end)
+        if end_iso is None:
+            return f"Could not parse end time: '{end}'"
     else:
         try:
             start_dt = dateutil_parser.parse(start_iso)
@@ -114,8 +122,8 @@ def add_event(title: str, start: str, end: str = "", description: str = "") -> s
 
 
 @mcp.tool()
-def list_events(date: str = "today", days: int = 7) -> str:
-    """List upcoming calendar events.
+def local_list_events(date: str = "today", days: int = 7) -> str:
+    """List upcoming events from the LOCAL offline calendar (not Google Calendar).
 
     Args:
         date: Start date to list from (e.g., "today", "2026-03-01").
@@ -161,8 +169,8 @@ def list_events(date: str = "today", days: int = 7) -> str:
 
 
 @mcp.tool()
-def get_event(event_id: str) -> str:
-    """Get full details of a calendar event.
+def local_get_event(event_id: str) -> str:
+    """Get full details of a LOCAL offline calendar event.
 
     Args:
         event_id: The event's ID.
@@ -186,14 +194,14 @@ def get_event(event_id: str) -> str:
 
 
 @mcp.tool()
-def update_event(
+def local_update_event(
     event_id: str,
     title: str = "",
     start: str = "",
     end: str = "",
     description: str = "",
 ) -> str:
-    """Update an existing calendar event.
+    """Update an existing LOCAL offline calendar event.
 
     Args:
         event_id: The event's ID.
@@ -210,9 +218,15 @@ def update_event(
             if title:
                 e["title"] = title
             if start:
-                e["start"] = _parse_datetime(start)
+                parsed = _parse_datetime(start)
+                if parsed is None:
+                    return f"Could not parse start time: '{start}'"
+                e["start"] = parsed
             if end:
-                e["end"] = _parse_datetime(end)
+                parsed = _parse_datetime(end)
+                if parsed is None:
+                    return f"Could not parse end time: '{end}'"
+                e["end"] = parsed
             if description:
                 e["description"] = description
             _write_events(events)
@@ -221,8 +235,8 @@ def update_event(
 
 
 @mcp.tool()
-def delete_event(event_id: str) -> str:
-    """Delete a calendar event.
+def local_delete_event(event_id: str) -> str:
+    """Delete a LOCAL offline calendar event.
 
     Args:
         event_id: The event's ID.
@@ -239,8 +253,8 @@ def delete_event(event_id: str) -> str:
 
 
 @mcp.tool()
-def search_events(query: str, limit: int = 10) -> str:
-    """Search calendar events by title or description.
+def local_search_events(query: str, limit: int = 10) -> str:
+    """Search LOCAL offline calendar events by title or description.
 
     Args:
         query: Search text.

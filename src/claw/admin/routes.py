@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import json
 import logging
+import logging.handlers
 import os
+import subprocess
 import time
 from collections import deque
 import re
@@ -38,19 +42,53 @@ _PENDING_AUTH_MAX = 50
 class LogBuffer(logging.Handler):
     """Ring-buffer logging handler for the admin log viewer."""
 
-    def __init__(self, maxlen: int = 1000) -> None:
+    def __init__(self, maxlen: int = 1000, fmt: str = "text") -> None:
         super().__init__()
         self.records: deque[str] = deque(maxlen=maxlen)
-        self.setFormatter(logging.Formatter(
-            "%(asctime)s %(levelname)-7s %(name)s: %(message)s",
-            datefmt="%H:%M:%S",
-        ))
+        self._json_mode = fmt == "json"
+        if not self._json_mode:
+            self.setFormatter(logging.Formatter(
+                "%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+                datefmt="%H:%M:%S",
+            ))
 
     def emit(self, record: logging.LogRecord) -> None:
-        self.records.append(self.format(record))
+        if self._json_mode:
+            entry = {
+                "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+                "level": record.levelname,
+                "logger": record.name,
+                "message": record.getMessage(),
+            }
+            if record.exc_info and record.exc_info[1]:
+                entry["exc_info"] = logging.Formatter().formatException(record.exc_info)
+            self.records.append(json.dumps(entry))
+        else:
+            self.records.append(self.format(record))
+
+
+class JsonLineFormatter(logging.Formatter):
+    """Structured JSON formatter for file logging."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        entry = {
+            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info and record.exc_info[1]:
+            entry["exc_info"] = self.formatException(record.exc_info)
+        return json.dumps(entry)
 
 
 # ── Page routes ─────────────────────────────────────────────────────────────
+
+@router.get("/app", response_class=HTMLResponse)
+async def pwa_app(request: Request):
+    """The Claw PWA — remote client interface. No admin auth required."""
+    return request.app.state.templates.TemplateResponse("app.html", {"request": request})
+
 
 @router.get("/", response_class=HTMLResponse)
 async def chat_page(request: Request):
@@ -116,7 +154,7 @@ async def settings_page(request: Request):
         "settings.html",
         {
             "request": request,
-            "settings": settings.model_dump(),
+            "settings": _redact_settings(settings.model_dump()),
             "has_google_credentials": has_google_credentials,
             "acct_status": acct_status,
             "gemini_key_set": gemini_key_set,
@@ -131,6 +169,20 @@ async def logs_page(request: Request):
     return request.app.state.templates.TemplateResponse(
         "logs.html",
         {"request": request, "logs": list(log_buffer.records)},
+    )
+
+
+@router.get("/audio", response_class=HTMLResponse)
+async def audio_page(request: Request):
+    return request.app.state.templates.TemplateResponse(
+        "audio.html", {"request": request},
+    )
+
+
+@router.get("/conversations", response_class=HTMLResponse)
+async def conversations_page(request: Request):
+    return request.app.state.templates.TemplateResponse(
+        "conversations.html", {"request": request},
     )
 
 
@@ -182,6 +234,13 @@ async def api_chat(request: Request):
     if agent is None:
         return {"role": "assistant", "content": "Agent not available.", "tools_used": []}
 
+    # Handle slash commands before agent processing
+    if message.startswith("/"):
+        from claw.agent_core.commands import dispatch_command
+        result = await dispatch_command(message, agent)
+        if result is not None:
+            return result
+
     # Serialize chat requests to protect shared session state
     chat_lock: asyncio.Lock = request.app.state.chat_lock
 
@@ -212,6 +271,78 @@ async def api_chat(request: Request):
     usage = agent.last_usage.to_dict() if agent.last_usage else {}
     usage["context_window"] = get_settings().llm.context_window
     return {"role": "assistant", "content": response, "tools_used": sorted(tools_used), "usage": usage}
+
+
+@router.post("/api/chat/stream")
+async def api_chat_stream(request: Request):
+    """Stream a chat response as Server-Sent Events."""
+    body = await request.json()
+    message = body.get("message", "").strip()
+    model = body.get("model")
+    if not message:
+        return JSONResponse({"error": "Empty message"}, status_code=400)
+
+    agent = request.app.state.agent
+    registry = request.app.state.registry
+    broadcaster: StatusBroadcaster = request.app.state.broadcaster
+
+    if agent is None:
+        return JSONResponse({"error": "Agent not available"}, status_code=503)
+
+    # Handle slash commands before streaming — return plain JSON
+    if message.startswith("/"):
+        from claw.agent_core.commands import dispatch_command
+        result = await dispatch_command(message, agent)
+        if result is not None:
+            # Return as a single SSE event so the client gets the response
+            async def command_stream():
+                yield json.dumps({"type": "token", "content": result["content"]})
+                yield json.dumps({
+                    "type": "done",
+                    "content": result["content"],
+                    "tools_used": [],
+                    "usage": {},
+                    "is_command": True,
+                })
+            return EventSourceResponse(command_stream())
+
+    chat_lock: asyncio.Lock = request.app.state.chat_lock
+    bg_tasks: set = request.app.state.bg_tasks
+
+    async def generate():
+        async with chat_lock:
+            await broadcaster.update_state("processing")
+            await broadcaster.update_transcription(message)
+
+            tools = registry.get_openai_tools() if registry else None
+            try:
+                async for event in agent.process_utterance_stream(
+                    message, tools=tools or None, model=model or None,
+                ):
+                    yield json.dumps(event)
+
+                    # Broadcast tokens to other SSE clients (Android, dashboard)
+                    if event["type"] == "token":
+                        await broadcaster.broadcast_token(event["content"])
+                    elif event["type"] == "done":
+                        await broadcaster.update_response(event["content"])
+                        await broadcaster.broadcast_token("", done=True)
+
+            except Exception:
+                log.exception("Stream processing failed")
+                yield json.dumps({
+                    "type": "error",
+                    "message": "Sorry, something went wrong processing your message.",
+                })
+            finally:
+                await broadcaster.update_state("idle")
+
+        # After lock released: background fact extraction
+        task = asyncio.create_task(_extract_facts(agent))
+        bg_tasks.add(task)
+        task.add_done_callback(bg_tasks.discard)
+
+    return EventSourceResponse(generate())
 
 
 @router.post("/api/chat/new")
@@ -302,6 +433,31 @@ async def _extract_facts(agent) -> None:
         log.exception("Chat fact extraction failed")
 
 
+# ── Usage tracking ──────────────────────────────────────────────────────────
+
+@router.get("/api/usage")
+async def api_usage(request: Request):
+    """Get token usage summary."""
+    tracker = getattr(request.app.state, "usage_tracker", None)
+    if tracker is None:
+        return {"session": {}, "today": {}, "total": {}}
+    return {
+        "session": tracker.get_session_summary(),
+        "today": tracker.get_daily_summary(),
+        "total": tracker.get_total_summary(),
+    }
+
+
+@router.get("/api/usage/history")
+async def api_usage_history(request: Request):
+    """Get daily usage history."""
+    tracker = getattr(request.app.state, "usage_tracker", None)
+    days = int(request.query_params.get("days", "7"))
+    if tracker is None:
+        return {"history": []}
+    return {"history": tracker.get_history(days)}
+
+
 # ── Conversation persistence ───────────────────────────────────────────────
 
 def _conversations_dir() -> Path:
@@ -314,6 +470,55 @@ def _conversations_dir() -> Path:
 
 def _valid_convo_id(convo_id: str) -> bool:
     return bool(re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", convo_id))
+
+
+@router.get("/api/conversations/search")
+async def api_search_conversations(q: str = ""):
+    """Substring search across saved conversations."""
+    if not q.strip():
+        return []
+    query = q.strip().lower()
+    d = _conversations_dir()
+    results = []
+    for f in sorted(d.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            data = json.loads(f.read_text())
+            # Search in title and message content
+            title = data.get("title", "")
+            messages = data.get("messages", [])
+            text_blob = title.lower() + " " + " ".join(
+                (m.get("content") or "").lower() for m in messages
+            )
+            if query in text_blob:
+                results.append({
+                    "id": data["id"],
+                    "title": title,
+                    "created_at": data.get("created_at"),
+                    "updated_at": data.get("updated_at"),
+                    "message_count": len(messages),
+                })
+        except (json.JSONDecodeError, KeyError):
+            continue
+    return results
+
+
+@router.post("/api/conversations/bulk-delete")
+async def api_bulk_delete_conversations(request: Request):
+    """Delete multiple conversations at once."""
+    body = await request.json()
+    ids = body.get("ids", [])
+    if not ids:
+        return JSONResponse({"error": "No IDs provided"}, status_code=400)
+    d = _conversations_dir()
+    deleted = 0
+    for convo_id in ids:
+        if not _valid_convo_id(convo_id):
+            continue
+        f = d / f"{convo_id}.json"
+        if f.exists():
+            f.unlink()
+            deleted += 1
+    return {"status": "ok", "deleted": deleted}
 
 
 @router.get("/api/conversations")
@@ -396,6 +601,43 @@ async def api_delete_conversation(convo_id: str):
         return JSONResponse({"error": "Not found"}, status_code=404)
     f.unlink()
     return {"status": "ok"}
+
+
+@router.get("/api/conversations/{convo_id}/export")
+async def api_export_conversation(convo_id: str, format: str = "json"):
+    """Export a conversation as JSON download or Markdown."""
+    if not _valid_convo_id(convo_id):
+        return JSONResponse({"error": "Invalid conversation ID"}, status_code=400)
+    f = _conversations_dir() / f"{convo_id}.json"
+    if not f.exists():
+        return JSONResponse({"error": "Not found"}, status_code=404)
+
+    data = json.loads(f.read_text())
+
+    if format == "md":
+        lines = [f"# {data.get('title', 'Conversation')}\n"]
+        if data.get("created_at"):
+            lines.append(f"*{data['created_at']}*\n")
+        lines.append("")
+        for msg in data.get("messages", []):
+            content_text = msg.get("content") or ""
+            if not content_text or msg.get("role") == "tool":
+                continue
+            role = "User" if msg.get("role") == "user" else "Claw"
+            lines.append(f"**{role}:** {content_text}\n")
+        content = "\n".join(lines)
+        return Response(
+            content=content,
+            media_type="text/markdown",
+            headers={"Content-Disposition": f'attachment; filename="{convo_id}.md"'},
+        )
+
+    # Default: JSON download
+    return Response(
+        content=json.dumps(data, indent=2),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{convo_id}.json"'},
+    )
 
 
 def _friendly_device_name(raw: str, direction: str = "input") -> str:
@@ -561,11 +803,30 @@ async def api_wake_models():
     }
 
 
+_REDACT_KEYS = {"api_key"}
+
+
+def _redact_settings(data: dict) -> dict:
+    """Deep-copy settings dict with sensitive values masked."""
+    out = {}
+    for k, v in data.items():
+        if isinstance(v, dict):
+            out[k] = _redact_settings(v)
+        elif k in _REDACT_KEYS and isinstance(v, str) and v and v != "no-key":
+            if len(v) <= 8:
+                out[k] = v[:2] + "***"
+            else:
+                out[k] = v[:4] + "***" + v[-4:]
+        else:
+            out[k] = v
+    return out
+
+
 @router.get("/api/settings")
 async def api_get_settings():
     """Return current settings as JSON (used by frontend polling)."""
     from claw.config import get_settings
-    return get_settings().model_dump()
+    return _redact_settings(get_settings().model_dump())
 
 
 @router.post("/api/settings")
@@ -578,7 +839,7 @@ async def api_update_settings(request: Request):
     settings = get_settings()
     old_model = settings.llm.model
 
-    # Merge updates into current settings
+    # Merge updates into current settings, skipping redacted masked values
     current = settings.model_dump()
     for section, values in body.items():
         if section in current and isinstance(values, dict):
@@ -589,7 +850,11 @@ async def api_update_settings(request: Request):
                     if k != "accounts":
                         current[section][k] = v
             else:
-                current[section].update(values)
+                for k, v in values.items():
+                    # Skip masked values — don't overwrite real secrets with "xxxx***xxxx"
+                    if isinstance(v, str) and "***" in v:
+                        continue
+                    current[section][k] = v
 
     # Save and reload
     try:
@@ -608,7 +873,275 @@ async def api_update_settings(request: Request):
     return {"status": "ok", "message": "Settings updated and reloaded"}
 
 
+# ── Health check ────────────────────────────────────────────────────────
+
+@router.get("/api/health")
+async def api_health(request: Request):
+    """System health check. Returns 200 if healthy, 503 if degraded/unhealthy."""
+    import httpx
+    from claw.config import get_settings
+
+    settings = get_settings()
+    checks: dict[str, dict] = {}
+
+    # LLM reachable
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{settings.llm.base_url.rstrip('/')}/models")
+            checks["llm"] = {"status": "ok" if resp.status_code == 200 else "error"}
+    except Exception as exc:
+        checks["llm"] = {"status": "error", "detail": str(exc)}
+
+    # ChromaDB — check via the agent's retriever → store
+    try:
+        agent = request.app.state.agent
+        store = getattr(getattr(agent, "retriever", None), "_store", None)
+        if store and getattr(store, "_initialized", False):
+            checks["chromadb"] = {"status": "ok"}
+        else:
+            checks["chromadb"] = {"status": "warning", "detail": "Store not initialized"}
+    except Exception as exc:
+        checks["chromadb"] = {"status": "error", "detail": str(exc)}
+
+    # Audio device (run off event loop — PortAudio can block)
+    try:
+        import sounddevice as sd
+        devs = await asyncio.to_thread(sd.query_devices)
+        input_devs = [d for d in devs if d["max_input_channels"] > 0]
+        checks["audio"] = {"status": "ok" if input_devs else "warning", "devices": len(input_devs)}
+    except Exception as exc:
+        checks["audio"] = {"status": "error", "detail": str(exc)}
+
+    # MCP servers
+    registry = request.app.state.registry
+    if registry:
+        servers = registry.list_servers()
+        checks["mcp"] = {"status": "ok", "servers": len(servers)}
+    else:
+        checks["mcp"] = {"status": "warning", "detail": "No registry"}
+
+    # Overall status
+    statuses = [c["status"] for c in checks.values()]
+    if all(s == "ok" for s in statuses):
+        overall = "healthy"
+    elif "error" in statuses:
+        overall = "unhealthy"
+    else:
+        overall = "degraded"
+
+    code = 200 if overall == "healthy" else 503
+    return JSONResponse({"status": overall, "checks": checks}, status_code=code)
+
+
+# ── Webhook ────────────────────────────────────────────────────────────────
+
+@router.post("/api/webhook")
+async def api_webhook(request: Request):
+    """Inbound webhook endpoint for external integrations.
+
+    Expects JSON body with: {"type": "message|notification|reminder", "payload": {...}, "source": "..."}
+    Optionally verified via X-Webhook-Signature header (HMAC-SHA256).
+    Auth: uses HMAC signature verification, NOT HTTP Basic Auth.
+    """
+    from claw.admin.webhook import (
+        WebhookEvent,
+        handle_message,
+        handle_notification,
+        handle_reminder,
+        verify_signature,
+    )
+    from claw.config import get_settings
+
+    cfg = get_settings().webhook
+    if not cfg.enabled:
+        return JSONResponse({"error": "Webhooks are disabled"}, status_code=403)
+
+    # Verify HMAC signature
+    body = await request.body()
+    signature = request.headers.get("X-Webhook-Signature", "")
+    if cfg.secret and not verify_signature(body, signature, cfg.secret):
+        return JSONResponse({"error": "Invalid signature"}, status_code=401)
+
+    # Parse event
+    try:
+        data = json.loads(body)
+        event = WebhookEvent(**data)
+    except Exception as e:
+        return JSONResponse({"error": f"Invalid event: {e}"}, status_code=400)
+
+    # Check allowed event types
+    if event.type not in cfg.allowed_events:
+        return JSONResponse({"error": f"Event type '{event.type}' not allowed"}, status_code=400)
+
+    # Dispatch
+    agent = request.app.state.agent
+    broadcaster = request.app.state.broadcaster
+    tts = getattr(request.app.state, "tts", None)
+
+    if event.type == "message":
+        registry = request.app.state.registry
+        tools = registry.get_openai_tools() if registry else None
+        result = await handle_message(event, agent, broadcaster, tools=tools)
+    elif event.type == "notification":
+        result = await handle_notification(event, broadcaster, tts)
+    elif event.type == "reminder":
+        result = await handle_reminder(event)
+    else:
+        return JSONResponse({"error": f"Unknown event type: {event.type}"}, status_code=400)
+
+    return result
+
+
+# ── Tool usage stats ──────────────────────────────────────────────────────
+
+@router.get("/api/tools/stats")
+async def api_tool_stats(request: Request):
+    """Per-tool usage statistics."""
+    stats = getattr(request.app.state, "tool_stats", None)
+    if stats is None:
+        return {"tools": {}, "recent": []}
+    return {"tools": stats.summary(), "recent": stats.recent()}
+
+
+# ── Scheduled reminders ───────────────────────────────────────────────────
+
+@router.get("/api/reminders")
+async def api_reminders(request: Request):
+    """Get upcoming scheduled reminders."""
+    scheduler = getattr(request.app.state, "scheduler", None)
+    if scheduler is None:
+        return {"reminders": []}
+    return {"reminders": scheduler.get_upcoming()}
+
+
+# ── Audio diagnostics ─────────────────────────────────────────────────────
+
+@router.get("/api/audio/stats")
+async def api_audio_stats(request: Request):
+    """Return current audio capture metrics for the diagnostics page."""
+    capture = getattr(request.app.state, "audio_capture", None)
+    vad = getattr(request.app.state, "vad", None)
+
+    if capture is None:
+        return {"active": False}
+
+    metrics = capture.get_metrics()
+    metrics["active"] = True
+    if vad:
+        metrics["vad_speech_prob"] = round(vad.last_speech_prob, 4)
+        metrics["vad_threshold"] = vad.threshold
+    return metrics
+
+
+# ── Backup ────────────────────────────────────────────────────────────────
+
+@router.post("/api/admin/backup")
+async def api_trigger_backup(request: Request):
+    """Trigger a data backup."""
+    from claw.config import PROJECT_ROOT
+
+    script = PROJECT_ROOT / "scripts" / "backup.sh"
+    if not script.exists():
+        return JSONResponse({"error": "Backup script not found"}, status_code=404)
+
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            ["bash", str(script)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=str(PROJECT_ROOT),
+        )
+        if result.returncode == 0:
+            return {"status": "ok", "output": result.stdout[-500:]}
+        return JSONResponse(
+            {"error": "Backup failed", "output": result.stderr[-500:]},
+            status_code=500,
+        )
+    except subprocess.TimeoutExpired:
+        return JSONResponse({"error": "Backup timed out"}, status_code=504)
+
+
+# ── Device management (remote access) ────────────────────────────────────
+
+@router.get("/api/devices")
+async def api_list_devices():
+    """List all registered remote devices."""
+    from claw.admin.api_key import list_devices
+    return {"devices": list_devices()}
+
+
+@router.post("/api/devices")
+async def api_create_device(request: Request):
+    """Register a new remote device. Returns API key + provisioning code exactly once."""
+    body = await request.json()
+    name = body.get("name", "").strip()
+    if not name:
+        return JSONResponse({"error": "Device name is required"}, status_code=400)
+
+    from claw.admin.api_key import create_device
+    try:
+        result = create_device(name)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    response = {
+        "status": "ok",
+        "name": name,
+        "api_key": result["api_key"],
+        "wg_available": result["wg_available"],
+        "warning": "Save this information now — it cannot be retrieved later.",
+    }
+    if result["provisioning_code"]:
+        response["provisioning_code"] = result["provisioning_code"]
+        # Generate QR code as SVG data URI for the provisioning code
+        try:
+            import segno
+
+            qr = segno.make(result["provisioning_code"], error="L")
+            buf = io.BytesIO()
+            qr.save(buf, kind="svg", dark="#ffffff", light="#0d1117", scale=12, border=2)
+            buf.seek(0)
+            svg_b64 = base64.b64encode(buf.read()).decode()
+            response["qr_data_uri"] = f"data:image/svg+xml;base64,{svg_b64}"
+        except Exception:
+            log.warning("Failed to generate QR code for device '%s'", name)
+
+    return response
+
+
+@router.delete("/api/devices/{name}")
+async def api_revoke_device(name: str):
+    """Revoke a device's remote access."""
+    from claw.admin.api_key import revoke_device
+    if not revoke_device(name):
+        return JSONResponse({"error": "Device not found"}, status_code=404)
+    return {"status": "ok", "message": f"Device '{name}' revoked"}
+
+
 # ── Google OAuth flow ────────────────────────────────────────────────────────
+
+def _token_is_valid(token_file: str) -> bool:
+    """Check if a token file exists, has a refresh_token, and covers all configured scopes."""
+    from claw.config import PROJECT_ROOT, get_settings
+    p = Path(token_file)
+    token_path = p if p.is_absolute() else PROJECT_ROOT / p
+    if not token_path.exists():
+        return False
+    try:
+        data = json.loads(token_path.read_text())
+        if not data.get("refresh_token"):
+            return False
+        # Check that token has all scopes from config
+        token_scopes = set(data.get("scopes", []))
+        config_scopes = set(get_settings().google_auth.scopes)
+        if not config_scopes.issubset(token_scopes):
+            return False  # Missing scopes — re-auth needed
+        return True
+    except (json.JSONDecodeError, KeyError):
+        return False
+
 
 def _clean_pending_auth() -> None:
     """Remove expired pending auth entries and enforce cap."""
@@ -634,8 +1167,12 @@ async def auth_google_start(request: Request, label: str = ""):
         )
 
     settings = get_settings()
+    # Allow re-auth if account exists but token is missing or invalid
     if label in settings.google_auth.accounts:
-        return RedirectResponse(f"/settings?error=Account+'{label}'+already+exists.", status_code=302)
+        acct = settings.google_auth.accounts[label]
+        token_file = acct.token_file if hasattr(acct, "token_file") else acct.get("token_file", "")
+        if _token_is_valid(token_file):
+            return RedirectResponse(f"/settings?error=Account+'{label}'+already+linked.", status_code=302)
 
     # Check credentials.json exists
     creds_path = PROJECT_ROOT / settings.google_auth.credentials_file
@@ -704,10 +1241,14 @@ async def auth_google_callback(request: Request, code: str = "", state: str = ""
 
     settings = get_settings()
 
-    # Re-check label hasn't been claimed by a concurrent flow
-    if label in settings.google_auth.accounts:
-        _pending_auth.pop(state, None)
-        return RedirectResponse("/settings?error=Account+already+exists.+Another+linking+completed+first.", status_code=302)
+    # For re-auth: allow if token is missing/invalid; block only if fully linked concurrently
+    is_reauth = label in settings.google_auth.accounts
+    if is_reauth:
+        acct = settings.google_auth.accounts[label]
+        token_file = acct.token_file if hasattr(acct, "token_file") else acct.get("token_file", "")
+        if _token_is_valid(token_file):
+            _pending_auth.pop(state, None)
+            return RedirectResponse("/settings?error=Account+already+linked.+Another+flow+completed+first.", status_code=302)
 
     creds_path = PROJECT_ROOT / settings.google_auth.credentials_file
 
@@ -749,35 +1290,43 @@ async def auth_google_callback(request: Request, code: str = "", state: str = ""
         log.warning("Could not fetch email for account '%s'", label)
 
     # Build account config and merge into settings
-    from claw.config import GoogleAccountCalendarConfig, GoogleAccountGmailConfig
-    cal_defaults = GoogleAccountCalendarConfig()
-    gmail_defaults = GoogleAccountGmailConfig()
     token_rel = f"data/google/tokens/{label}.json"
-    acct_config = {
-        "email": email,
-        "token_file": token_rel,
-        "calendar": {
-            "enabled": True,
-            "default_calendar": cal_defaults.default_calendar,
-            "calendars": {},
-            "timezone": cal_defaults.timezone,
-        },
-        "gmail": {
-            "enabled": True,
-            "max_results": gmail_defaults.max_results,
-            "default_label": gmail_defaults.default_label,
-        },
-        "youtube_music": False,
-    }
-
     current = settings.model_dump()
-    current["google_auth"]["accounts"][label] = acct_config
+
+    if is_reauth:
+        # Re-auth: preserve existing calendar/gmail settings, just update token + email
+        existing = current["google_auth"]["accounts"][label]
+        existing["token_file"] = token_rel
+        if email:
+            existing["email"] = email
+    else:
+        # New account: create fresh config with defaults
+        from claw.config import GoogleAccountCalendarConfig, GoogleAccountGmailConfig
+        cal_defaults = GoogleAccountCalendarConfig()
+        gmail_defaults = GoogleAccountGmailConfig()
+        current["google_auth"]["accounts"][label] = {
+            "email": email,
+            "token_file": token_rel,
+            "calendar": {
+                "enabled": True,
+                "default_calendar": cal_defaults.default_calendar,
+                "calendars": {},
+                "timezone": cal_defaults.timezone,
+            },
+            "gmail": {
+                "enabled": True,
+                "max_results": gmail_defaults.max_results,
+                "default_label": gmail_defaults.default_label,
+            },
+            "youtube_music": False,
+        }
 
     new_settings = type(settings)(**current)
     new_settings.save_yaml()
     reload_settings()
 
-    log.info("Google account '%s' (%s) linked successfully", label, email or "unknown email")
+    action = "re-linked" if is_reauth else "linked"
+    log.info("Google account '%s' (%s) %s successfully", label, email or "unknown email", action)
     return RedirectResponse(f"/settings?linked={label}", status_code=302)
 
 
@@ -880,6 +1429,79 @@ async def auth_google_complete(request: Request):
 
     log.info("Google account '%s' (%s) linked successfully (manual)", label, email or "unknown email")
     return {"status": "ok", "label": label, "email": email}
+
+
+# ── Admin auth endpoints ──────────────────────────────────────────────────────
+
+@router.post("/api/admin/setup")
+async def api_admin_setup(request: Request):
+    """Set the initial admin password. Only works when no password is configured."""
+    from claw.secret_store import exists as secret_exists, store as secret_store
+
+    if secret_exists("admin_password"):
+        return JSONResponse({"error": "Password already configured"}, status_code=409)
+
+    body = await request.json()
+    password = body.get("password", "")
+    if len(password) < 8:
+        return JSONResponse({"error": "Password must be at least 8 characters"}, status_code=400)
+
+    secret_store("admin_password", password)
+    log.info("Admin password configured via setup endpoint")
+    return {"status": "ok", "message": "Admin password set"}
+
+
+@router.post("/api/admin/password")
+async def api_admin_password(request: Request):
+    """Change the admin password. Requires current authentication."""
+    from claw.secret_store import store as secret_store
+
+    body = await request.json()
+    new_password = body.get("password", "")
+    if len(new_password) < 8:
+        return JSONResponse({"error": "Password must be at least 8 characters"}, status_code=400)
+
+    secret_store("admin_password", new_password)
+    log.info("Admin password changed")
+    return {"status": "ok", "message": "Password updated"}
+
+
+# ── Weather / OWM API key endpoints ──────────────────────────────────────────
+
+@router.post("/api/weather/key")
+async def api_weather_key_save(request: Request):
+    """Store OWM API key in secret store and clear plaintext from config."""
+    from claw.secret_store import store as secret_store
+
+    body = await request.json()
+    key = body.get("key", "").strip()
+    if not key:
+        return JSONResponse({"error": "No API key provided"}, status_code=400)
+
+    secret_store("owm_api_key", key)
+
+    # Clear plaintext key from config.yaml
+    from claw.config import get_settings, reload_settings
+    settings = get_settings()
+    if settings.weather.api_key:
+        current = settings.model_dump()
+        current["weather"]["api_key"] = ""
+        new_settings = type(settings)(**current)
+        new_settings.save_yaml()
+        reload_settings()
+
+    masked = key[:4] + "***" + key[-4:] if len(key) > 8 else key[:2] + "***"
+    log.info("OWM API key stored in secret store (masked: %s)", masked)
+    return {"status": "ok", "masked": masked}
+
+
+@router.delete("/api/weather/key")
+async def api_weather_key_delete():
+    """Remove the stored OWM API key."""
+    from claw.secret_store import delete as secret_delete
+    secret_delete("owm_api_key")
+    log.info("OWM API key removed")
+    return {"status": "ok"}
 
 
 # ── Gemini API key + log endpoints ────────────────────────────────────────────
@@ -996,10 +1618,121 @@ async def api_gemini_logs_delete():
     return {"status": "ok", "files_deleted": count}
 
 
+# ── Cloud LLM endpoints ──────────────────────────────────────────────────────
+
+
+@router.post("/api/cloud-llm/key")
+async def api_cloud_llm_key(request: Request):
+    """Store a cloud LLM API key in the secret store."""
+    from claw import secret_store
+    from claw.config import get_settings
+
+    body = await request.json()
+    provider = body.get("provider", "")  # "claude" or "gemini"
+    api_key = body.get("api_key", "").strip()
+
+    cloud_cfg = get_settings().cloud_llm
+    if provider not in cloud_cfg.providers:
+        return JSONResponse({"error": f"Unknown provider: {provider}"}, status_code=400)
+
+    secret_name = cloud_cfg.providers[provider].api_key_secret
+    if not api_key:
+        return JSONResponse({"error": "API key is required"}, status_code=400)
+
+    secret_store.store(secret_name, api_key)
+
+    # Re-initialize cloud clients
+    from claw.agent_core.llm_client import LLMClient
+    llm: LLMClient = request.app.state.agent.llm
+    llm._init_cloud_clients()
+
+    return {"status": "ok", "provider": provider, "masked": secret_store.mask(secret_name)}
+
+
+@router.delete("/api/cloud-llm/key")
+async def api_cloud_llm_key_delete(request: Request):
+    """Remove a cloud LLM API key."""
+    from claw import secret_store
+    from claw.config import get_settings
+
+    body = await request.json()
+    provider = body.get("provider", "")
+
+    cloud_cfg = get_settings().cloud_llm
+    if provider not in cloud_cfg.providers:
+        return JSONResponse({"error": f"Unknown provider: {provider}"}, status_code=400)
+
+    secret_name = cloud_cfg.providers[provider].api_key_secret
+    secret_store.delete(secret_name)
+
+    # Re-initialize cloud clients (will remove this provider)
+    from claw.agent_core.llm_client import LLMClient
+    llm: LLMClient = request.app.state.agent.llm
+    llm._init_cloud_clients()
+
+    # If this was the active provider, switch back to local
+    if llm.active_provider == provider:
+        llm.active_provider = "local"
+
+    return {"status": "ok"}
+
+
+@router.post("/api/cloud-llm/switch")
+async def api_cloud_llm_switch(request: Request):
+    """Switch the active LLM backend."""
+    from claw.config import get_settings
+
+    body = await request.json()
+    provider = body.get("provider", "local")
+
+    from claw.agent_core.llm_client import LLMClient
+    llm: LLMClient = request.app.state.agent.llm
+    old_provider = llm.active_provider
+    llm.active_provider = provider
+
+    # Update config and trigger reload callbacks
+    from claw.config import reload_settings
+    settings = get_settings()
+    settings.cloud_llm.active_provider = provider
+    settings.save_yaml()
+    reload_settings()
+
+    # Broadcast change
+    broadcaster = request.app.state.broadcaster
+    await broadcaster.broadcast("llm_provider", {"provider": provider})
+
+    return {"status": "ok", "provider": provider, "previous": old_provider}
+
+
+@router.get("/api/cloud-llm/status")
+async def api_cloud_llm_status(request: Request):
+    """Get cloud LLM configuration status."""
+    from claw import secret_store
+    from claw.config import get_settings
+
+    cloud_cfg = get_settings().cloud_llm
+
+    from claw.agent_core.llm_client import LLMClient
+    llm: LLMClient = request.app.state.agent.llm
+
+    providers = {}
+    for name, provider in cloud_cfg.providers.items():
+        has_key = secret_store.exists(provider.api_key_secret) if provider.api_key_secret else False
+        providers[name] = {
+            "model": provider.model,
+            "has_key": has_key,
+            "key_masked": secret_store.mask(provider.api_key_secret) if has_key else "Not set",
+            "available": name in llm._cloud_clients,
+        }
+
+    return {
+        "active_provider": llm.active_provider,
+        "failover_to_local": cloud_cfg.failover_to_local,
+        "providers": providers,
+    }
+
+
 # ── Compute backend endpoints ────────────────────────────────────────────────
-
-_compute_build_task: asyncio.Task | None = None
-
 
 @router.get("/api/compute/hardware")
 async def api_compute_hardware():
@@ -1017,7 +1750,6 @@ async def api_compute_hardware():
 @router.post("/api/compute/switch")
 async def api_compute_switch(request: Request):
     """Switch compute backend: install deps, rebuild llama.cpp, update config."""
-    global _compute_build_task
     from claw.compute import VALID_BACKENDS, is_build_running, switch_backend
 
     body = await request.json()
@@ -1042,9 +1774,10 @@ async def api_compute_switch(request: Request):
             reload_settings()
             log.info("Compute backend switched to %s", target)
 
-    _compute_build_task = asyncio.create_task(_run_switch())
-    request.app.state.bg_tasks.add(_compute_build_task)
-    _compute_build_task.add_done_callback(request.app.state.bg_tasks.discard)
+    task = asyncio.create_task(_run_switch())
+    request.app.state.compute_build_task = task
+    request.app.state.bg_tasks.add(task)
+    task.add_done_callback(request.app.state.bg_tasks.discard)
 
     return {"status": "ok", "message": f"Switching to {target}..."}
 
@@ -1082,12 +1815,15 @@ async def api_compute_progress():
 # ── Music control endpoints ──────────────────────────────────────────────────
 
 async def _music_call(request: Request, tool_name: str, arguments: dict | None = None) -> str | None:
-    """Call a YouTube Music MCP tool via the registry. Returns result string or None."""
-    from claw.mcp_handler.router import ToolRouter
-    registry = request.app.state.registry
-    if registry is None:
-        return None
-    router_ = ToolRouter(registry)
+    """Call a YouTube Music MCP tool via the shared tool router. Returns result string or None."""
+    router_ = getattr(request.app.state, "tool_router", None)
+    if router_ is None:
+        # Fallback: create a bare router without stats
+        from claw.mcp_handler.router import ToolRouter
+        registry = request.app.state.registry
+        if registry is None:
+            return None
+        router_ = ToolRouter(registry)
     try:
         return await router_.call_tool(tool_name, arguments or {})
     except Exception:
@@ -1129,6 +1865,35 @@ async def api_music_control(request: Request):
     else:
         return JSONResponse({"error": f"Unknown action: {action}"}, status_code=400)
 
+    return {"status": "ok", "result": result or ""}
+
+
+@router.get("/api/music/pins")
+async def api_music_pins(request: Request):
+    """Return all pinned songs."""
+    result = await _music_call(request, "list_pins")
+    if result is None:
+        return JSONResponse({"pins": {}})
+    # Parse the player's get_pins() dict via the MCP list_pins tool
+    # We need the raw dict, so call the player directly if possible
+    from claw.config import PROJECT_ROOT, get_settings
+    settings = get_settings()
+    pins_path = PROJECT_ROOT / settings.youtube_music.pins_file
+    if pins_path.exists():
+        try:
+            pins = json.loads(pins_path.read_text())
+            return JSONResponse({"pins": pins})
+        except (json.JSONDecodeError, OSError):
+            pass
+    return JSONResponse({"pins": {}})
+
+
+@router.delete("/api/music/pins/{phrase:path}")
+async def api_music_unpin(phrase: str, request: Request):
+    """Remove a pinned song phrase."""
+    result = await _music_call(request, "unpin_song", {"phrase": phrase})
+    if result and "No pin found" in result:
+        return JSONResponse({"error": result}, status_code=404)
     return {"status": "ok", "result": result or ""}
 
 

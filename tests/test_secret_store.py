@@ -119,3 +119,11 @@ class TestSecretStore:
         store("test_key", "first")
         store("test_key", "second")
         assert load("test_key") == "second"
+
+    def test_secrets_dir_permissions(self, tmp_path):
+        """_secrets_dir() creates directory with 0o700 permissions."""
+        from claw.secret_store import _secrets_dir
+
+        d = _secrets_dir()
+        mode = stat.S_IMODE(os.stat(d).st_mode)
+        assert mode == 0o700

@@ -33,9 +33,11 @@ class MusicPlayer:
         max_search_results: int = 5,
         client_id: str = "",
         client_secret: str = "",
+        pins_file: str = "",
     ) -> None:
         self._auth_file = auth_file
         self._history_file = Path(history_file)
+        self._pins_file = Path(pins_file) if pins_file else None
         self._default_volume = max(0, min(100, default_volume))
         self._auto_radio = auto_radio
         self._max_history = max_history
@@ -49,12 +51,14 @@ class MusicPlayer:
         self._current: dict | None = None
         self._queue: list[dict] = []
         self._history: list[dict] = []
+        self._pinned: dict[str, dict] = {}
         self._yt = None
         self._lock = threading.Lock()
         self._generation = 0  # tracks which play() call is current
         self._has_played = False  # guard against mpv's initial idle state
 
         self._load_history()
+        self._load_pins()
 
     # ── ytmusicapi ──────────────────────────────────────────────
 
@@ -138,8 +142,8 @@ class MusicPlayer:
         """
         if self._ipc_path is None:
             return None
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
-            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             sock.settimeout(5)
             sock.connect(self._ipc_path)
             cmd = json.dumps({"command": list(args)}) + "\n"
@@ -149,7 +153,6 @@ class MusicPlayer:
                 while b"\n" not in buf:
                     chunk = sock.recv(4096)
                     if not chunk:
-                        sock.close()
                         return None
                     buf += chunk
                 line, buf = buf.split(b"\n", 1)
@@ -158,12 +161,12 @@ class MusicPlayer:
                 msg = json.loads(line)
                 # Skip event messages — only return command responses
                 if "event" not in msg:
-                    sock.close()
                     return msg
-            # unreachable, but satisfy lint
         except (OSError, json.JSONDecodeError) as e:
             log.debug("mpv IPC command %s failed: %s", args, e)
             return None
+        finally:
+            sock.close()
 
     def _mpv_set_property(self, name: str, value):
         return self._mpv_command("set_property", name, value)
@@ -177,10 +180,14 @@ class MusicPlayer:
     def _start_idle_watcher(self):
         """Background thread that watches mpv idle-active for auto-advance."""
         def watcher():
+            with self._lock:
+                ipc_path = self._ipc_path
+            if not ipc_path:
+                return
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             try:
-                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 sock.settimeout(None)
-                sock.connect(self._ipc_path)
+                sock.connect(ipc_path)
                 # Register property observer
                 sock.sendall(
                     json.dumps({"command": ["observe_property", 1, "idle-active"]}).encode() + b"\n"
@@ -213,9 +220,10 @@ class MusicPlayer:
                                 except Exception:
                                     log.exception("Error in track-end handler")
                             prev_idle = is_idle
-                sock.close()
             except Exception:
                 log.debug("Idle watcher thread ended")
+            finally:
+                sock.close()
 
         t = threading.Thread(target=watcher, daemon=True)
         t.start()
@@ -271,6 +279,92 @@ class MusicPlayer:
         if len(self._history) > self._max_history:
             self._history = self._history[-self._max_history :]
         self._save_history()
+
+    # ── Pinned songs ─────────────────────────────────────────────
+
+    @staticmethod
+    def _normalize_phrase(phrase: str) -> str:
+        """Normalize a pin phrase: lowercase, strip, remove leading 'the '."""
+        phrase = phrase.lower().strip()
+        if phrase.startswith("the "):
+            phrase = phrase[4:]
+        return phrase
+
+    def _load_pins(self):
+        """Load pinned songs from JSON file."""
+        if self._pins_file and self._pins_file.exists():
+            try:
+                self._pinned = json.loads(self._pins_file.read_text())
+            except (json.JSONDecodeError, OSError):
+                log.warning("Failed to load pins from %s, starting fresh", self._pins_file)
+                self._pinned = {}
+
+    def _save_pins(self):
+        """Persist pinned songs to JSON file atomically."""
+        if self._pins_file is None:
+            return
+        self._pins_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._pins_file.with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps(self._pinned, indent=2))
+            tmp.replace(self._pins_file)
+        except OSError:
+            log.exception("Failed to save pins to %s", self._pins_file)
+
+    def pin_song(self, phrase: str) -> str:
+        """Pin the currently playing track to a phrase."""
+        with self._lock:
+            if self._current is None:
+                return "Nothing is playing — play a song first, then pin it."
+            track = self._current
+        normalized = self._normalize_phrase(phrase)
+        if not normalized:
+            return "Please provide a phrase to pin this song to."
+        self._pinned[normalized] = {
+            "video_id": track.get("video_id", ""),
+            "title": track.get("title", "Unknown"),
+            "artist": track.get("artist", "Unknown"),
+        }
+        self._save_pins()
+        return f"Pinned '{track['title']}' by {track['artist']} as \"{normalized}\""
+
+    def pin_playlist(self, phrase: str, playlist_id: str, title: str = "") -> str:
+        """Pin a playlist to a phrase."""
+        normalized = self._normalize_phrase(phrase)
+        if not normalized:
+            return "Please provide a phrase to pin this playlist to."
+        self._pinned[normalized] = {
+            "playlist_id": playlist_id,
+            "title": title or playlist_id,
+        }
+        self._save_pins()
+        return f"Pinned playlist '{title or playlist_id}' as \"{normalized}\""
+
+    def pin_song_by_id(self, phrase: str, video_id: str, title: str, artist: str) -> str:
+        """Pin a specific track to a phrase without needing playback."""
+        normalized = self._normalize_phrase(phrase)
+        if not normalized:
+            return "Please provide a phrase to pin this song to."
+        self._pinned[normalized] = {
+            "video_id": video_id,
+            "title": title,
+            "artist": artist,
+        }
+        self._save_pins()
+        return f"Pinned '{title}' by {artist} as \"{normalized}\""
+
+    def unpin_song(self, phrase: str) -> str:
+        """Remove a pinned phrase."""
+        normalized = self._normalize_phrase(phrase)
+        if normalized not in self._pinned:
+            return f"No pin found for \"{normalized}\""
+        removed = self._pinned.pop(normalized)
+        self._save_pins()
+        return f"Unpinned \"{normalized}\" (was: {removed.get('title', '?')} by {removed.get('artist', 'unknown')})"
+
+    def get_pins(self) -> dict:
+        """Return all pinned phrases."""
+        return dict(self._pinned)
 
     # ── Search / stream ─────────────────────────────────────────
 
@@ -395,14 +489,100 @@ class MusicPlayer:
         threading.Thread(
             target=self._generate_radio_queue, args=(video_id, gen), daemon=True
         ).start()
-        return f"Now playing: {title} by {artist}"
+        return f"Now playing: {title} by {artist} [video:{video_id}]"
+
+    def play_playlist(self, playlist_id: str) -> str:
+        """Play all tracks from a YouTube Music playlist."""
+        yt = self._ensure_yt()
+        try:
+            playlist = yt.get_playlist(playlist_id, limit=200)
+        except Exception:
+            log.exception("Failed to fetch playlist %s", playlist_id)
+            return f"Failed to load playlist '{playlist_id}'"
+
+        playlist_title = playlist.get("title", playlist_id)
+        raw_tracks = playlist.get("tracks", [])
+        if not raw_tracks:
+            return f"Playlist '{playlist_title}' is empty or unavailable"
+
+        tracks = []
+        for t in raw_tracks:
+            vid = t.get("videoId")
+            if not vid:
+                continue
+            artists = t.get("artists") or []
+            first_artist = artists[0] if artists else None
+            artist = (first_artist.get("name", "Unknown") if isinstance(first_artist, dict)
+                      else "Unknown")
+            duration = t.get("duration") or ""
+            album_data = t.get("album")
+            album_name = (album_data.get("name", "") if isinstance(album_data, dict)
+                          else "")
+            tracks.append({
+                "video_id": vid,
+                "title": t.get("title", "Unknown"),
+                "artist": artist,
+                "album": album_name,
+                "duration": duration,
+            })
+
+        if not tracks:
+            return f"No playable tracks in playlist '{playlist_title}'"
+
+        first = tracks[0]
+        with self._lock:
+            self._queue.clear()
+            self._generation += 1
+            self._queue.extend(tracks[1:])
+
+        self._play_track(first, source="user_request")
+        return (
+            f"Now playing playlist '{playlist_title}' ({len(tracks)} tracks). "
+            f"Starting with: {first['title']} by {first['artist']}"
+        )
+
+    @staticmethod
+    def _rank_results(results: list[dict], query: str) -> list[dict]:
+        """Rank search results by relevance to the query.
+
+        Scoring: title term match = 2pts, artist term match = 1pt,
+        exact title substring = 3pt bonus.
+        """
+        query_lower = query.lower()
+        terms = query_lower.split()
+
+        scored = []
+        for r in results:
+            score = 0.0
+            title = r.get("title", "").lower()
+            artist = r.get("artist", "").lower()
+            for term in terms:
+                if term in title:
+                    score += 2.0
+                if term in artist:
+                    score += 1.0
+            if query_lower in title:
+                score += 3.0
+            scored.append((score, r))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [r for _, r in scored]
 
     def play_search(self, query: str) -> str:
-        """Search and play the top result."""
-        results = self.search(query, limit=1)
+        """Search and play the best-matching result. Checks pinned songs first."""
+        normalized = self._normalize_phrase(query)
+        pin = self._pinned.get(normalized)
+        if pin:
+            if "playlist_id" in pin:
+                log.info("Playing pinned playlist for '%s': %s", normalized, pin.get("title", pin["playlist_id"]))
+                return self.play_playlist(pin["playlist_id"])
+            log.info("Playing pinned track for '%s': %s", normalized, pin["title"])
+            return self.play(pin["video_id"], pin["title"], pin["artist"])
+        results = self.search(query)
         if not results:
             return f"No results found for '{query}'"
-        top = results[0]
+        ranked = self._rank_results(results, query)
+        top = ranked[0]
         return self.play(top["video_id"], top["title"], top["artist"])
 
     def pause(self) -> str:
@@ -444,7 +624,7 @@ class MusicPlayer:
             self._mpv_command("stop")
             return "Queue is empty, playback stopped"
         self._play_track(next_track, source="auto_radio")
-        return f"Skipped '{title}'. Now playing: {next_track['title']} by {next_track['artist']}"
+        return f"Skipped '{title}'. Now playing: {next_track['title']} by {next_track['artist']} [video:{next_track['video_id']}]"
 
     def stop(self) -> str:
         """Stop playback and clear queue."""

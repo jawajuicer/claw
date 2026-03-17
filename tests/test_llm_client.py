@@ -62,13 +62,13 @@ class TestChat:
         call_kwargs = llm_client._mock_openai.chat.completions.create.call_args
         assert call_kwargs.kwargs["model"] == "custom-model"
 
-    async def test_chat_timeout_raises_asyncio_timeout(self, llm_client):
+    async def test_chat_timeout_raises_runtime_error(self, llm_client):
         from openai import APITimeoutError
 
         llm_client._mock_openai.chat.completions.create = AsyncMock(
             side_effect=APITimeoutError(request=MagicMock())
         )
-        with pytest.raises(asyncio.TimeoutError):
+        with pytest.raises(RuntimeError, match="All LLM providers failed"):
             await llm_client.chat(messages=[{"role": "user", "content": "test"}])
 
 
@@ -122,10 +122,10 @@ class TestConfigReload:
         assert llm_client._max_tokens == 2048
 
     def test_on_config_reload_recreates_client_on_url_change(self, llm_client, settings):
-        # The reload method checks `cfg.base_url != str(self._client.base_url).rstrip("/")`.
+        # The reload method checks `cfg.base_url != str(self._local_client.base_url).rstrip("/")`.
         # We need to set the mock client's base_url to the OLD value so the comparison
         # detects a change.
-        llm_client._client.base_url = "http://localhost:8081/v1/"
+        llm_client._local_client.base_url = "http://localhost:8081/v1/"
         settings.llm.base_url = "http://new-host:8081/v1"
         settings.llm.api_key = "new-key"
         settings.llm.timeout = 30
@@ -134,7 +134,7 @@ class TestConfigReload:
             new_client = AsyncMock()
             MockNewOAI.return_value = new_client
             llm_client._on_config_reload(settings)
-            assert llm_client._client is new_client
+            assert llm_client._local_client is new_client
             MockNewOAI.assert_called_once_with(
                 base_url="http://new-host:8081/v1",
                 api_key="new-key",

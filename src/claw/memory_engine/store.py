@@ -85,6 +85,7 @@ class MemoryStore:
 
     def add_category(self, category_id: str, text: str, metadata: dict | None = None) -> None:
         """Store a category label."""
+        self._require_init()
         meta = metadata or {}
         self.categories.add(
             ids=[category_id],
@@ -108,12 +109,14 @@ class MemoryStore:
 
     def query_categories(self, query: str, n_results: int | None = None) -> list[dict]:
         """Search categories by semantic similarity."""
+        self._require_init()
         n = n_results or get_settings().memory.max_results
         results = self.categories.query(query_texts=[query], n_results=n)
         return self._unpack_results(results)
 
     def stats(self) -> dict[str, int]:
         """Return counts for each collection."""
+        self._require_init()
         return {
             "conversations": self.conversations.count() if self.conversations else 0,
             "facts": self.facts.count() if self.facts else 0,

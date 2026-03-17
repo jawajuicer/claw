@@ -65,7 +65,11 @@ def _resolve_calendar(acct_cfg: dict, label: str) -> str:
         if label in ("default", ""):
             return cal_cfg.get("default_calendar", "primary")
         calendars = cal_cfg.get("calendars", {})
-        return calendars.get(label, label)
+        if label in calendars:
+            return calendars[label]
+        # If the label isn't a known sub-calendar, fall back to primary
+        # (prevents account names like "work" being used as calendar IDs)
+        return cal_cfg.get("default_calendar", "primary")
     return label or "primary"
 
 
@@ -87,9 +91,7 @@ def _resolve(account: str, service_name: str = "calendar"):
     svc = _get_service(label)
     if svc is None:
         return None, None, (
-            "Google Calendar is not configured. "
-            "Link a Google account in Settings > Google Accounts, "
-            "then enable Google Calendar."
+            "Authentication failed — please re-authorize in Settings."
         )
     return svc, acct_cfg, ""
 
@@ -126,7 +128,7 @@ def list_events(calendar: str = "default", date: str = "today", days: int = 7, a
     """List upcoming events from Google Calendar.
 
     Args:
-        calendar: Calendar label ("work", "personal") or ID. Use "default" for primary.
+        calendar: Which calendar to query. Use "default" for primary calendar. Only use a specific calendar ID if the user explicitly names a sub-calendar.
         date: Start date (e.g., "today", "2026-03-01").
         days: Number of days to look ahead (1-90).
         account: Google account label (e.g., "personal", "work"). Leave empty to auto-select.
@@ -194,7 +196,7 @@ def create_event(
         title: Event title.
         start: Start time (e.g., "2026-03-01 14:00", "tomorrow 3pm").
         end: End time (optional, defaults to 1 hour after start).
-        calendar: Calendar label or ID.
+        calendar: Which calendar to use. Use "default" for primary calendar.
         description: Event description.
         account: Google account label (e.g., "personal", "work"). Leave empty to auto-select.
     """
@@ -247,7 +249,7 @@ def update_event(
 
     Args:
         event_id: The event ID.
-        calendar: Calendar label or ID.
+        calendar: Which calendar. Use "default" for primary calendar.
         title: New title (leave empty to keep current).
         start: New start time (leave empty to keep current).
         end: New end time (leave empty to keep current).
@@ -296,7 +298,7 @@ def delete_event(event_id: str, calendar: str = "default", account: str = "") ->
 
     Args:
         event_id: The event ID.
-        calendar: Calendar label or ID.
+        calendar: Which calendar. Use "default" for primary calendar.
         account: Google account label (e.g., "personal", "work"). Leave empty to auto-select.
     """
     service, acct_cfg, err = _resolve(account)
@@ -318,7 +320,7 @@ def search_events(query: str, calendar: str = "default", limit: int = 10, accoun
 
     Args:
         query: Search text.
-        calendar: Calendar label or ID.
+        calendar: Which calendar. Use "default" for primary calendar.
         limit: Maximum results (1-50).
         account: Google account label (e.g., "personal", "work"). Leave empty to auto-select.
     """

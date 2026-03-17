@@ -36,6 +36,9 @@ class TTSEngine(abc.ABC):
     def get_sample_rate(self) -> int:
         """Return the output sample rate in Hz."""
 
+    def update_config(self, cfg) -> None:
+        """Update engine parameters without full reload. Override if needed."""
+
     def shutdown(self) -> None:
         """Release resources. Override if needed."""
 

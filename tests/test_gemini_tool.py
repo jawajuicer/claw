@@ -172,7 +172,7 @@ class TestAnalyzeDocument:
             patch.object(gs, "_get_genai", return_value=mock_genai),
         ):
             result = gs.gemini_analyze_document("/nonexistent/file.txt")
-        assert "not found" in result.lower()
+        assert "not found" in result.lower() or "access denied" in result.lower()
 
     def test_success(self, tmp_path, gemini_config, mock_genai):
         import mcp_tools.gemini.server as gs
@@ -195,7 +195,7 @@ class TestDescribeImage:
             patch.object(gs, "_get_genai", return_value=mock_genai),
         ):
             result = gs.gemini_describe_image("/nonexistent/image.png")
-        assert "not found" in result.lower()
+        assert "not found" in result.lower() or "access denied" in result.lower()
 
     def test_success(self, tmp_path, gemini_config, mock_genai):
         import mcp_tools.gemini.server as gs
@@ -276,7 +276,7 @@ class TestUsage:
         with patch.object(gs, "_get_api_key", return_value="AIzaTestKey12345678"):
             result = gs.gemini_usage()
         assert "2/5" in result  # 2 requests out of 5 limit
-        assert "AIza" in result
+        assert "configured" in result
 
 
 class TestLogging:

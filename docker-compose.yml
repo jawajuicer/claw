@@ -1,0 +1,51 @@
+version: "3.8"
+
+services:
+  claw:
+    build: .
+    container_name: claw
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
+      - claw-models:/app/data/models
+    environment:
+      - CLAW_ADMIN__HOST=0.0.0.0
+    # GPU access (uncomment for NVIDIA)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    # Audio access (uncomment if using voice mode)
+    # devices:
+    #   - /dev/snd:/dev/snd
+    # volumes (add for PulseAudio):
+    #   - /run/user/1000/pulse:/run/user/1000/pulse
+    # environment (add for PulseAudio):
+    #   - PULSE_SERVER=unix:/run/user/1000/pulse/native
+
+  # Optional: llama-swap LLM server
+  # llama-swap:
+  #   image: ghcr.io/mostlygeek/llama-swap:latest
+  #   container_name: llama-swap
+  #   restart: unless-stopped
+  #   ports:
+  #     - "8081:8081"
+  #   volumes:
+  #     - ~/models:/models
+  #     - ./llama-swap-config.yaml:/config.yaml
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: all
+  #             capabilities: [gpu]
+
+volumes:
+  claw-models:

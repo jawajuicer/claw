@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}Conversations{% endblock %}
+
+{% block content %}
+<h2>Conversation History</h2>
+
+<div class="conversations-toolbar">
+    <input type="search" id="convo-search" placeholder="Search conversations..." style="max-width:400px">
+    <div class="conversations-actions">
+        <label><input type="checkbox" id="select-all"> Select all</label>
+        <button class="outline" id="bulk-delete-btn" disabled onclick="bulkDelete()">Delete Selected</button>
+    </div>
+</div>
+
+<table role="grid" id="convo-table">
+    <thead>
+        <tr>
+            <th style="width:30px"></th>
+            <th>Title</th>
+            <th>Messages</th>
+            <th>Date</th>
+            <th style="width:120px">Actions</th>
+        </tr>
+    </thead>
+    <tbody id="convo-tbody">
+        <tr><td colspan="5">Loading...</td></tr>
+    </tbody>
+</table>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const tbody = document.getElementById('convo-tbody');
+const searchInput = document.getElementById('convo-search');
+const selectAll = document.getElementById('select-all');
+const bulkBtn = document.getElementById('bulk-delete-btn');
+let conversations = [];
+let searchTimer = null;
+
+function renderTable(convos) {
+    conversations = convos;
+    if (convos.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center">No conversations found</td></tr>';
+        return;
+    }
+    tbody.innerHTML = convos.map(function(c) {
+        const date = new Date(c.updated_at || c.created_at);
+        const dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+        return '<tr data-id="' + c.id + '">'
+            + '<td><input type="checkbox" class="convo-cb" value="' + c.id + '"></td>'
+            + '<td><a href="javascript:void(0)" onclick="loadInChat(\'' + c.id + '\')">' + escHtml(c.title) + '</a></td>'
+            + '<td>' + c.message_count + '</td>'
+            + '<td>' + dateStr + '</td>'
+            + '<td>'
+            + '<a href="/api/conversations/' + c.id + '/export?format=md" title="Export MD" style="margin-right:8px">MD</a>'
+            + '<a href="/api/conversations/' + c.id + '/export?format=json" title="Export JSON" style="margin-right:8px">JSON</a>'
+            + '<button class="outline" style="padding:2px 8px;font-size:0.8rem" onclick="deleteOne(\'' + c.id + '\')">Del</button>'
+            + '</td>'
+            + '</tr>';
+    }).join('');
+    updateBulkBtn();
+}
+
+function escHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+}
+
+async function loadConversations(query) {
+    try {
+        const url = query ? '/api/conversations/search?q=' + encodeURIComponent(query) : '/api/conversations';
+        const res = await fetch(url);
+        const data = await res.json();
+        renderTable(data);
+    } catch(e) {
+        tbody.innerHTML = '<tr><td colspan="5">Failed to load</td></tr>';
+    }
+}
+
+function loadInChat(id) {
+    window.location.href = '/?load=' + id;
+}
+
+async function deleteOne(id) {
+    await fetch('/api/conversations/' + id, {method: 'DELETE'});
+    loadConversations(searchInput.value.trim());
+}
+
+async function bulkDelete() {
+    const checked = document.querySelectorAll('.convo-cb:checked');
+    const ids = Array.from(checked).map(function(cb) { return cb.value; });
+    if (ids.length === 0) return;
+    await fetch('/api/conversations/bulk-delete', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ids: ids}),
+    });
+    selectAll.checked = false;
+    loadConversations(searchInput.value.trim());
+}
+
+function updateBulkBtn() {
+    const checked = document.querySelectorAll('.convo-cb:checked');
+    bulkBtn.disabled = checked.length === 0;
+}
+
+searchInput.addEventListener('input', function() {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(function() {
+        loadConversations(searchInput.value.trim());
+    }, 300);
+});
+
+selectAll.addEventListener('change', function() {
+    document.querySelectorAll('.convo-cb').forEach(function(cb) {
+        cb.checked = selectAll.checked;
+    });
+    updateBulkBtn();
+});
+
+document.addEventListener('change', function(e) {
+    if (e.target.classList.contains('convo-cb')) updateBulkBtn();
+});
+
+loadConversations();
+</script>
+{% endblock %}

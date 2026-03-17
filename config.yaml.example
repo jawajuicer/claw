@@ -1,0 +1,138 @@
+# The Claw — Configuration
+# Copy this to config.yaml and customize.
+
+audio:
+  device_index: null     # null = system default
+  sample_rate: 16000
+  channels: 1
+  block_size: 1280
+  silence_duration: 2.0
+  agc_silence_threshold: 0.05
+  agc_gain_ceiling: 3.5
+  max_record_seconds: 30
+  chime_enabled: true
+  chime_volume: 0.5
+  chime_frequency: 880
+  chime_duration_ms: 200
+
+wake:
+  model_paths:
+    - hey_claw
+    - hey_jarvis_v0.1
+  thresholds:
+    hey_claw: 0.5
+  default_threshold: 0.5
+  inference_framework: onnx
+  custom_models_dir: data/models/wake
+
+whisper:
+  model_size: base
+  compute_type: int8
+  language: en
+  beam_size: 5
+
+tts:
+  enabled: true
+  engine: piper             # "piper" or "fish_speech"
+  piper_model: data/models/tts/piper/en_US-lessac-medium.onnx
+  piper_speaker_id: null
+  fish_speech_url: http://localhost:8090
+  fish_speech_reference_audio: ""
+  fish_speech_reference_text: ""
+  speed: 1.0
+  voice_loop_enabled: true
+  admin_chat_enabled: true
+  admin_chat_autoplay: false
+
+llm:
+  base_url: http://localhost:8081/v1  # llama-swap
+  api_key: no-key
+  model: qwen3.5:4b
+  temperature: 0.7
+  max_tokens: 1024
+  max_iterations: 5
+  context_window: 32768
+  timeout: 45
+  thinking: "off"
+
+# Cloud LLM (optional — set API keys in admin panel)
+cloud_llm:
+  active_provider: local    # "local", "claude", "gemini"
+
+memory:
+  chroma_path: data/chromadb
+  embedding_model: all-MiniLM-L6-v2
+  max_results: 3
+  conversation_collection: conversations
+  facts_collection: facts
+  categories_collection: categories
+
+mcp:
+  tools_dir: mcp_tools
+  startup_timeout: 10
+  enabled_servers:
+    - system_control
+    - notes
+    - weather
+
+youtube_music:
+  enabled: false
+  auth_file: data/youtube_music/auth.json
+  history_file: data/youtube_music/history.json
+  auto_radio: true
+  default_volume: 80
+  max_history: 500
+  max_search_results: 5
+
+weather:
+  api_key: ""               # OpenWeatherMap API key (free tier)
+  default_location: ""      # e.g. "Akron, OH"
+
+gemini:
+  enabled: false
+  model: gemini-2.5-flash
+  pro_model: gemini-2.5-pro
+  temperature: 0.7
+  max_output_tokens: 2048
+  web_search: true
+  document_analysis: true
+  image_understanding: true
+  reasoning_fallback: false
+  escalation_mode: ask
+  daily_request_limit: 200
+  grounding_daily_limit: 400
+  log_requests: true
+  log_dir: data/gemini/logs
+
+notes:
+  enabled: true
+  storage_dir: data/notes
+  max_notes: 0              # 0 = unlimited
+
+local_calendar:
+  enabled: true
+  storage_file: data/calendar/local.json
+
+google_auth:
+  credentials_file: data/google/credentials.json
+  scopes:
+    - https://www.googleapis.com/auth/gmail.compose
+    - https://www.googleapis.com/auth/gmail.readonly
+    - https://www.googleapis.com/auth/calendar
+    - https://www.googleapis.com/auth/contacts.readonly
+    - https://www.googleapis.com/auth/directory.readonly
+  accounts: {}
+
+chat:
+  save_conversations: true
+  conversations_dir: data/conversations
+  session_timeout: 86400
+
+scheduler:
+  enabled: true
+  poll_interval: 30
+
+admin:
+  host: 0.0.0.0
+  port: 8080
+  log_buffer_size: 1000

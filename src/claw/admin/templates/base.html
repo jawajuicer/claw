@@ -39,8 +39,10 @@
 
         <ul>
             <li><a href="/"{% if request.url.path == "/" %} aria-current="page"{% endif %}>Chat</a></li>
+            <li><a href="/conversations"{% if request.url.path == "/conversations" %} aria-current="page"{% endif %}>History</a></li>
             <li><a href="/dashboard"{% if request.url.path == "/dashboard" %} aria-current="page"{% endif %}>Dashboard</a></li>
             <li><a href="/settings"{% if request.url.path == "/settings" %} aria-current="page"{% endif %}>Settings</a></li>
+            <li><a href="/audio"{% if request.url.path == "/audio" %} aria-current="page"{% endif %}>Audio</a></li>
             <li><a href="/logs"{% if request.url.path == "/logs" %} aria-current="page"{% endif %}>Logs</a></li>
         </ul>
     </nav>

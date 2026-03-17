@@ -289,9 +289,11 @@ class TestGeminiDirectDispatch:
     async def test_ask_gemini_about(self, settings, mock_llm, mock_retriever, mock_tool_router):
         from claw.agent_core.agent import Agent
 
+        settings.gemini.enabled = True
         mock_tool_router.call_tool = AsyncMock(return_value="Gemini says: quarks and stuff")
         agent = Agent(llm=mock_llm, retriever=mock_retriever, tool_router=mock_tool_router)
-        result = await agent._try_direct_dispatch("ask gemini about quantum physics")
+        with patch("claw.agent_core.agent.get_settings", return_value=settings):
+            result = await agent._try_direct_dispatch("ask gemini about quantum physics")
         mock_tool_router.call_tool.assert_called_with(
             "gemini_ask", {"question": "quantum physics"},
         )
@@ -300,9 +302,11 @@ class TestGeminiDirectDispatch:
     async def test_have_gemini_explain(self, settings, mock_llm, mock_retriever, mock_tool_router):
         from claw.agent_core.agent import Agent
 
+        settings.gemini.enabled = True
         mock_tool_router.call_tool = AsyncMock(return_value="Gemini explanation")
         agent = Agent(llm=mock_llm, retriever=mock_retriever, tool_router=mock_tool_router)
-        await agent._try_direct_dispatch("have gemini explain black holes")
+        with patch("claw.agent_core.agent.get_settings", return_value=settings):
+            await agent._try_direct_dispatch("have gemini explain black holes")
         mock_tool_router.call_tool.assert_called_with(
             "gemini_ask", {"question": "explain black holes"},
         )
@@ -310,9 +314,11 @@ class TestGeminiDirectDispatch:
     async def test_use_gemini_to(self, settings, mock_llm, mock_retriever, mock_tool_router):
         from claw.agent_core.agent import Agent
 
+        settings.gemini.enabled = True
         mock_tool_router.call_tool = AsyncMock(return_value="Gemini result")
         agent = Agent(llm=mock_llm, retriever=mock_retriever, tool_router=mock_tool_router)
-        await agent._try_direct_dispatch("use gemini to write a haiku")
+        with patch("claw.agent_core.agent.get_settings", return_value=settings):
+            await agent._try_direct_dispatch("use gemini to write a haiku")
         mock_tool_router.call_tool.assert_called_with(
             "gemini_ask", {"question": "write a haiku"},
         )
@@ -320,9 +326,11 @@ class TestGeminiDirectDispatch:
     async def test_gemini_bare_prefix(self, settings, mock_llm, mock_retriever, mock_tool_router):
         from claw.agent_core.agent import Agent
 
+        settings.gemini.enabled = True
         mock_tool_router.call_tool = AsyncMock(return_value="Blue sky answer")
         agent = Agent(llm=mock_llm, retriever=mock_retriever, tool_router=mock_tool_router)
-        await agent._try_direct_dispatch("gemini, why is the sky blue")
+        with patch("claw.agent_core.agent.get_settings", return_value=settings):
+            await agent._try_direct_dispatch("gemini, why is the sky blue")
         mock_tool_router.call_tool.assert_called_with(
             "gemini_ask", {"question": "why is the sky blue"},
         )
@@ -330,9 +338,11 @@ class TestGeminiDirectDispatch:
     async def test_ask_gemini_if(self, settings, mock_llm, mock_retriever, mock_tool_router):
         from claw.agent_core.agent import Agent
 
+        settings.gemini.enabled = True
         mock_tool_router.call_tool = AsyncMock(return_value="Yes it is")
         agent = Agent(llm=mock_llm, retriever=mock_retriever, tool_router=mock_tool_router)
-        await agent._try_direct_dispatch("ask gemini if water is wet")
+        with patch("claw.agent_core.agent.get_settings", return_value=settings):
+            await agent._try_direct_dispatch("ask gemini if water is wet")
         mock_tool_router.call_tool.assert_called_with(
             "gemini_ask", {"question": "water is wet"},
         )
@@ -362,6 +372,7 @@ class TestEscalation:
 
         with patch("claw.agent_core.agent.get_settings") as mock_gs:
             mock_settings = settings
+            mock_settings.gemini.enabled = True
             mock_settings.gemini.escalation_mode = "ask"
             mock_gs.return_value = mock_settings
             agent = Agent(llm=mock_llm, retriever=mock_retriever, tool_router=mock_tool_router)
@@ -423,6 +434,7 @@ class TestEscalation:
 
         with patch("claw.agent_core.agent.get_settings") as mock_gs:
             mock_settings = settings
+            mock_settings.gemini.enabled = True
             mock_settings.gemini.escalation_mode = "auto"
             mock_gs.return_value = mock_settings
             agent = Agent(llm=mock_llm, retriever=mock_retriever, tool_router=mock_tool_router)
