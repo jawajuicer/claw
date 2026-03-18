@@ -3,7 +3,7 @@ audio:
   sample_rate: 16000
   channels: 1
   block_size: 1280
-  silence_duration: 1.2
+  silence_duration: 1.0
   agc_silence_threshold: 0.05
   agc_gain_ceiling: 3.5
   max_record_seconds: 30

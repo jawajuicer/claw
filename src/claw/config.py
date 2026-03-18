@@ -33,7 +33,7 @@ class AudioConfig(BaseModel):
         return v
     channels: int = 1
     block_size: int = 1280
-    silence_duration: float = 1.2
+    silence_duration: float = 1.0
     agc_silence_threshold: float = 0.05  # post-AGC RMS below this = silence
     agc_gain_ceiling: float = 3.5        # AGC gain above this = boosted noise, not speech
     vad_threshold: float = 0.5           # Silero VAD speech probability threshold (0.0–1.0)
