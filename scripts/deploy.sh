@@ -43,6 +43,8 @@ RSYNC_EXCLUDES=(
     --exclude='.git'
     --exclude='data/'
     --exclude='.env'
+    --exclude='.claude'
+    --exclude='config.yaml'
     --exclude='claw-android/'
 )
 
