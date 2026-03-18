@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from datetime import datetime
 from dataclasses import dataclass, field
 
 from openai.types.chat import ChatCompletionMessageParam
@@ -63,6 +64,11 @@ class ConversationSession:
         cfg = get_settings().llm
         self._base_system_prompt = cfg.system_prompt
         self._system_prompt = self._base_system_prompt
+
+        # Inject current date/time so the LLM can resolve relative dates
+        now = datetime.now()
+        date_ctx = f"\n\nCurrent date and time: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
+        self._system_prompt += date_ctx
 
         account_ctx = _build_account_context()
         if account_ctx:

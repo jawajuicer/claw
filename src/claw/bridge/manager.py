@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from claw.bridge.base import BridgeAdapter, InboundMessage
@@ -175,6 +176,7 @@ class BridgeManager:
 
         # Build context for the agent: platform info + fresh memory retrieval.
         # Bridge sessions persist, so session-init memory may be stale.
+        t_dispatch = time.monotonic()
         context_parts: list[str] = []
 
         # Platform context — tells the agent where the message came from
@@ -187,38 +189,52 @@ class BridgeManager:
                 f"[{msg.platform.title()} group chat — {msg.user_name} mentioned you]"
             )
 
-        # Admin-only context: group members, memory, account info
+        # Admin-only context: group members + memory retrieval in parallel
         if msg.is_admin:
-            # Group member list — so the agent knows who's in the chat
-            if not msg.is_direct:
+            async def _fetch_group_members() -> str | None:
+                if msg.is_direct:
+                    return None
                 adapter = self._adapters.get(msg.platform)
-                if adapter and hasattr(adapter, "get_group_members"):
-                    try:
-                        members = await adapter.get_group_members(msg.channel_id)
-                        if members:
-                            names = [m["name"] for m in members]
-                            context_parts.append(
-                                f"[Group members: {', '.join(names)}]"
-                            )
-                    except Exception:
-                        log.debug("Failed to fetch group members", exc_info=True)
+                if not adapter or not hasattr(adapter, "get_group_members"):
+                    return None
+                try:
+                    members = await adapter.get_group_members(msg.channel_id)
+                    if members:
+                        names = [m["name"] for m in members]
+                        return f"[Group members: {', '.join(names)}]"
+                except Exception:
+                    log.debug("Failed to fetch group members", exc_info=True)
+                return None
 
-            # Fresh memory retrieval (group observations, past conversations, facts)
-            try:
-                memory_ctx = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        self._agent.retriever.retrieve_context,
-                        msg.text, 8, 1200,
-                    ),
-                    timeout=5.0,
-                )
-                if memory_ctx:
-                    context_parts.append(memory_ctx)
-            except Exception:
-                log.debug(
-                    "Memory context retrieval failed for bridge message",
-                    exc_info=True,
-                )
+            async def _fetch_memory() -> str | None:
+                try:
+                    return await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self._agent.retriever.retrieve_context,
+                            msg.text, 8, 1200,
+                        ),
+                        timeout=3.0,
+                    )
+                except Exception:
+                    log.debug(
+                        "Memory context retrieval failed for bridge message",
+                        exc_info=True,
+                    )
+                return None
+
+            # Run both in parallel
+            t_ctx = time.monotonic()
+            group_ctx, memory_ctx = await asyncio.gather(
+                _fetch_group_members(), _fetch_memory(),
+            )
+            log.info(
+                "[%s] Context assembly: %.1fms (group + memory parallel)",
+                msg.platform, (time.monotonic() - t_ctx) * 1000,
+            )
+            if group_ctx:
+                context_parts.append(group_ctx)
+            if memory_ctx:
+                context_parts.append(memory_ctx)
         else:
             # Non-admin: add a note so the LLM knows not to offer tools
             context_parts.append(
@@ -236,8 +252,14 @@ class BridgeManager:
             self._agent._session = user_session
 
             try:
+                t_agent = time.monotonic()
                 response = await self._agent.process_utterance(
                     msg.text, tools=tools, context=context,
+                    _skip_session_memory=True,
+                )
+                log.info(
+                    "[%s] Agent processing: %.1fms",
+                    msg.platform, (time.monotonic() - t_agent) * 1000,
                 )
             except Exception:
                 log.exception("[%s] Agent processing failed for %s", msg.platform, msg.user_id)
@@ -248,6 +270,11 @@ class BridgeManager:
                     msg.platform, msg.user_id, self._agent._session
                 )
                 self._agent._session = original_session
+
+        log.info(
+            "[%s] Total dispatch: %.1fms",
+            msg.platform, (time.monotonic() - t_dispatch) * 1000,
+        )
 
         if response:
             # Broadcast the interaction via SSE

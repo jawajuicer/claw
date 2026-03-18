@@ -70,9 +70,11 @@ _KEYWORD_ROUTES: list[tuple[re.Pattern, set[str]]] = [
      {"gemini_web_search"}),
     (re.compile(r"\b(?:current|latest|recent|today'?s)\s+(?:news|events|prices?|scores?)\b", re.I),
      {"gemini_web_search"}),
-    # Gemini direct ask
-    (re.compile(r"\b(?:ask\s+gemini|have\s+gemini|use\s+gemini)\b", re.I), {"gemini_ask"}),
+    # Gemini direct ask / research
+    (re.compile(r"\b(?:ask\s+gemini|have\s+gemini|use\s+gemini|gemini\s+(?:look|search|research|find))\b", re.I), {"gemini_ask"}),
     (re.compile(r"^gemini[,:]?\s+", re.I), {"gemini_ask"}),
+    (re.compile(r"\b(?:look\s+up|research|search\s+for)\b.*\bgemini\b", re.I), {"gemini_ask"}),
+    (re.compile(r"\bgemini\b.*\b(?:look\s+up|research|search)\b", re.I), {"gemini_ask"}),
     # Cron jobs
     (re.compile(r"\b(?:cron\s+job|recurring|schedule\s+(?:a\s+)?(?:recurring|daily|weekly|hourly))\b", re.I),
      {"create_cron_job", "list_cron_jobs", "delete_cron_job"}),
@@ -199,6 +201,7 @@ class Agent:
         tools: list[dict] | None = None,
         model: str | None = None,
         context: str | None = None,
+        _skip_session_memory: bool = False,
     ) -> str:
         """Process a user utterance through the agent loop.
 
@@ -208,6 +211,8 @@ class Agent:
             model: Override the default model for this request.
             context: Additional context to inject before the user message
                      (e.g., platform info, memory refresh for bridge sessions).
+            _skip_session_memory: If True, skip memory retrieval during session
+                     init (caller already injected memory via context).
 
         Returns:
             The final assistant response text.
@@ -239,14 +244,17 @@ class Agent:
         if self._session is None or not self._session.messages:
             if self._session is None:
                 self._session = ConversationSession()
-            try:
-                memory_ctx = await asyncio.wait_for(
-                    asyncio.to_thread(self.retriever.retrieve_context, text),
-                    timeout=5.0,
-                )
-            except asyncio.TimeoutError:
-                log.warning("Memory retrieval timed out")
+            if _skip_session_memory:
                 memory_ctx = ""
+            else:
+                try:
+                    memory_ctx = await asyncio.wait_for(
+                        asyncio.to_thread(self.retriever.retrieve_context, text),
+                        timeout=3.0,
+                    )
+                except asyncio.TimeoutError:
+                    log.warning("Memory retrieval timed out")
+                    memory_ctx = ""
             self._session.initialize(memory_context=memory_ctx)
 
         self._last_interaction = t0
@@ -297,11 +305,13 @@ class Agent:
             log.info("Agent iteration %d/%d", iteration + 1, max_iterations)
 
             try:
+                t_llm = time.monotonic()
                 response = await self.llm.chat(
                     messages=self._session.get_messages(),
                     tools=tools if tools else None,
                     model=effective_model,
                 )
+                log.info("LLM call: %.1fms", (time.monotonic() - t_llm) * 1000)
             except asyncio.TimeoutError:
                 content = "Sorry, I took too long to respond. Please try again."
                 self._session.add_assistant(content)
@@ -334,7 +344,8 @@ class Agent:
                 stats.elapsed_s = time.monotonic() - t0
                 self.last_usage = stats
                 await self._record_usage(stats)
-                log.info("Agent response (iteration %d): %s", iteration + 1, content[:100])
+                log.info("Agent response (iteration %d, %.1fms total): %s",
+                         iteration + 1, stats.elapsed_s * 1000, content[:100])
                 return content
 
             # Process tool calls
@@ -356,7 +367,9 @@ class Agent:
 
                 if self.tool_router:
                     try:
+                        t_tool = time.monotonic()
                         result = await self.tool_router.call_tool(name, args)
+                        log.info("Tool %s: %.1fms", name, (time.monotonic() - t_tool) * 1000)
                     except Exception as e:
                         result = f"Error calling tool '{name}': {e}"
                         log.exception("Tool call failed: %s", name)
@@ -692,7 +705,7 @@ class Agent:
                 try:
                     memory_ctx = await asyncio.wait_for(
                         asyncio.to_thread(self.retriever.retrieve_context, text),
-                        timeout=5.0,
+                        timeout=3.0,
                     )
                 except asyncio.TimeoutError:
                     log.warning("Memory retrieval timed out")

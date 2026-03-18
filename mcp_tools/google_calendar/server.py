@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -175,10 +176,48 @@ def list_events(calendar: str = "default", date: str = "today", days: int = 7, a
                 time_str = dt.strftime("%a %b %d, %I:%M %p")
             except (ValueError, TypeError):
                 time_str = start
-            lines.append(f"- {summary} ({time_str}) [id: {event['id'][:12]}]")
+            lines.append(f"- {summary} ({time_str}) [id: {event['id']}]")
         return "\n".join(lines)
     except Exception as e:
         return f"Error listing events: {e}"
+
+
+def _parse_relative_datetime(text: str) -> datetime | None:
+    """Parse a datetime string, handling relative words like 'today' and 'tomorrow'.
+
+    dateutil doesn't understand relative day words — it silently ignores them
+    with fuzzy=True and defaults to today.  This function resolves the day
+    offset first, then lets dateutil handle the time portion.
+    """
+    text_lower = text.lower().strip()
+
+    # Detect relative day offset
+    day_offset = 0
+    remaining = text_lower
+    if re.match(r"\btomorrow\b", text_lower):
+        day_offset = 1
+        remaining = re.sub(r"\btomorrow\b", "", text_lower).strip()
+    elif re.match(r"\btoday\b", text_lower):
+        day_offset = 0
+        remaining = re.sub(r"\btoday\b", "", text_lower).strip()
+
+    base_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    base_date += timedelta(days=day_offset)
+
+    if not remaining:
+        # Only had "today" or "tomorrow" with no time — default to 9am
+        return base_date.replace(hour=9)
+
+    try:
+        parsed = dateutil_parser.parse(remaining, fuzzy=True)
+        # Use the time from parsing but the date from our relative calculation
+        if day_offset > 0 or re.search(r"\btoday\b", text_lower):
+            return base_date.replace(
+                hour=parsed.hour, minute=parsed.minute, second=parsed.second,
+            )
+        return parsed
+    except (ValueError, TypeError):
+        return None
 
 
 @mcp.tool()
@@ -207,15 +246,13 @@ def create_event(
     cal_id = _resolve_calendar(acct_cfg, calendar)
     tz = _get_timezone(acct_cfg)
 
-    try:
-        start_dt = dateutil_parser.parse(start, fuzzy=True)
-    except (ValueError, TypeError):
+    start_dt = _parse_relative_datetime(start)
+    if start_dt is None:
         return f"Could not parse start time: '{start}'"
 
     if end:
-        try:
-            end_dt = dateutil_parser.parse(end, fuzzy=True)
-        except (ValueError, TypeError):
+        end_dt = _parse_relative_datetime(end)
+        if end_dt is None:
             return f"Could not parse end time: '{end}'"
     else:
         end_dt = start_dt + timedelta(hours=1)
@@ -230,7 +267,7 @@ def create_event(
 
     try:
         event = service.events().insert(calendarId=cal_id, body=event_body).execute()
-        return f"Event created: '{title}' on {start_dt.strftime('%b %d at %I:%M %p')} (id: {event['id'][:12]})"
+        return f"Event created: '{title}' on {start_dt.strftime('%b %d at %I:%M %p')} (id: {event['id']})"
     except Exception as e:
         return f"Error creating event: {e}"
 
@@ -348,7 +385,7 @@ def search_events(query: str, calendar: str = "default", limit: int = 10, accoun
         for event in items:
             start = event["start"].get("dateTime", event["start"].get("date", ""))
             summary = event.get("summary", "(No title)")
-            lines.append(f"- {summary} ({start}) [id: {event['id'][:12]}]")
+            lines.append(f"- {summary} ({start}) [id: {event['id']}]")
         return "\n".join(lines)
     except Exception as e:
         return f"Error searching events: {e}"
