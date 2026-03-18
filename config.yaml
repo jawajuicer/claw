@@ -3,8 +3,9 @@ audio:
   sample_rate: 16000
   channels: 1
   block_size: 1280
-  silence_threshold: 0.01
   silence_duration: 2.0
+  agc_silence_threshold: 0.05
+  agc_gain_ceiling: 3.5
   max_record_seconds: 30
   chime_enabled: true
   chime_volume: 0.9
@@ -45,7 +46,7 @@ llm:
   max_iterations: 5
   context_window: 32768
   timeout: 45
-  thinking: false
+  thinking: "off"
   system_prompt: 'You are The Claw, a helpful voice assistant. You are running locally
 
     on the user''s machine. You have access to tools via MCP servers.
@@ -111,6 +112,8 @@ google_auth:
   - https://www.googleapis.com/auth/gmail.compose
   - https://www.googleapis.com/auth/gmail.readonly
   - https://www.googleapis.com/auth/calendar
+  - https://www.googleapis.com/auth/contacts.readonly
+  - https://www.googleapis.com/auth/directory.readonly
   accounts:
     personal:
       email: dallascowboys9964@gmail.com
@@ -126,7 +129,7 @@ google_auth:
         default_label: INBOX
       youtube_music: false
 chat:
-  save_conversations: false
+  save_conversations: true
   conversations_dir: data/conversations
   session_timeout: 86400
 admin:

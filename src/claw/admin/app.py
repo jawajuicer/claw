@@ -45,6 +45,11 @@ def create_admin_app(broadcaster: StatusBroadcaster, agent=None, registry=None) 
     app.state.vad = None  # Set by Claw voice loop for diagnostics
     app.state.chat_lock = asyncio.Lock()
     app.state.bg_tasks: set[asyncio.Task] = set()
+    app.state.cron_manager = None      # Set by Claw.initialize()
+    app.state.inbox = None             # Set by Claw.initialize()
+    app.state.skill_manager = None     # Set by Claw.initialize()
+    app.state.pairing_manager = None   # Set by Claw.initialize()
+    app.state.bridge_manager = None    # Set by Claw.initialize()
 
     # Log buffer — attach to root logger
     from claw.config import get_settings
@@ -72,9 +77,14 @@ def create_admin_app(broadcaster: StatusBroadcaster, agent=None, registry=None) 
             ))
         logging.getLogger().addHandler(file_handler)
 
-    # Routes — admin panel + remote API
+    # Routes — admin panel + remote API + bridge webhooks
     app.include_router(router)
     app.include_router(remote_router)
+    try:
+        from claw.bridge.webhooks import bridge_webhook_router
+        app.include_router(bridge_webhook_router)
+    except ImportError:
+        pass  # Bridge module not available
 
     log.info("Admin panel created")
     return app

@@ -61,20 +61,39 @@ class LLMClient:
         self._cloud_temperature.clear()
 
         for name, provider in cloud_cfg.providers.items():
-            api_key = secret_store.load(provider.api_key_secret) if provider.api_key_secret else None
-            if not api_key:
+            client = None
+
+            if name == "claude-cli":
+                # CLI adapter uses Claude Code's OAuth — no API key needed
+                try:
+                    import shutil
+
+                    from claw.agent_core.claude_cli_adapter import ClaudeCLIAdapter
+                    if shutil.which("claude"):
+                        client = ClaudeCLIAdapter(timeout=provider.timeout)
+                except ImportError:
+                    pass
+            elif name == "claude":
+                api_key = secret_store.load(provider.api_key_secret) if provider.api_key_secret else None
+                if api_key:
+                    try:
+                        from claw.agent_core.claude_adapter import ClaudeAdapter
+                        client = ClaudeAdapter(api_key=api_key, timeout=provider.timeout)
+                    except ImportError:
+                        log.warning("anthropic package not installed — Claude API provider unavailable")
+            else:
+                api_key = secret_store.load(provider.api_key_secret) if provider.api_key_secret else None
+                if api_key:
+                    client = AsyncOpenAI(
+                        base_url=provider.base_url,
+                        api_key=api_key,
+                        timeout=provider.timeout,
+                    )
+
+            if client is None:
                 continue
 
-            extra_headers = {}
-            if name == "claude":
-                extra_headers["anthropic-version"] = "2023-06-01"
-
-            self._cloud_clients[name] = AsyncOpenAI(
-                base_url=provider.base_url,
-                api_key=api_key,
-                timeout=provider.timeout,
-                default_headers=extra_headers if extra_headers else None,
-            )
+            self._cloud_clients[name] = client
             self._cloud_models[name] = provider.model
             self._cloud_max_tokens[name] = provider.max_tokens
             self._cloud_temperature[name] = provider.temperature

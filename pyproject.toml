@@ -48,8 +48,36 @@ gemini = [
     "google-generativeai>=0.8",
     "cryptography>=42.0",
 ]
+claude = [
+    "anthropic>=0.39",
+]
+telegram = [
+    "python-telegram-bot>=21.0",
+]
+discord = [
+    "discord.py>=2.3",
+]
+slack = [
+    "slack-bolt>=1.18",
+    "slack-sdk>=3.27",
+]
+twilio = [
+    "twilio>=9.0",
+]
+matrix = [
+    "matrix-nio>=0.24",
+]
+browser = [
+    "playwright>=1.40",
+]
+scheduler = [
+    "croniter>=2.0",
+]
+bridges = [
+    "claw[telegram,discord,slack,twilio,matrix]",
+]
 all = [
-    "claw[tts,youtube-music,google,gemini]",
+    "claw[tts,youtube-music,google,gemini,claude,bridges,browser,scheduler]",
 ]
 dev = [
     "pytest>=8.0",

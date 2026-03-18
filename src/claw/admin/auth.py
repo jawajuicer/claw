@@ -17,7 +17,10 @@ from starlette.responses import JSONResponse, Response
 log = logging.getLogger(__name__)
 
 # Paths that bypass authentication entirely
-_PUBLIC_PREFIXES = ("/static/", "/auth/google/", "/app", "/api/remote/app/", "/api/webhook")
+_PUBLIC_PREFIXES = (
+    "/static/", "/auth/google/", "/app", "/api/remote/app/",
+    "/api/webhook", "/api/bridge/", "/api/remote/pair/claim",
+)
 
 
 class BasicAuthMiddleware(BaseHTTPMiddleware):

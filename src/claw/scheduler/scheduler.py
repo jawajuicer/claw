@@ -71,19 +71,21 @@ class Scheduler:
             if cfg.announce_tts and self._tts:
                 try:
                     # Pause music if playing
+                    was_playing = False
                     if self._router:
                         try:
                             status_json = await self._router.call_tool("get_status", {})
                             status = json.loads(status_json)
                             if status.get("playing"):
                                 await self._router.call_tool("pause", {})
+                                was_playing = True
                         except Exception:
                             pass  # Music may not be playing
 
                     await self._tts.speak(f"Reminder: {message}")
 
-                    # Resume music
-                    if self._router:
+                    # Resume music only if it was playing before
+                    if self._router and was_playing:
                         try:
                             await self._router.call_tool("resume", {})
                         except Exception:

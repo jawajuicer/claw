@@ -184,6 +184,170 @@ Weather works out of the box using the free Open-Meteo API (no key required). Fo
 2. Set `weather.api_key` in `config.yaml`
 3. Optionally set `weather.default_location` (e.g., `"Akron, OH"`) -- if not set, location is auto-detected from your IP address
 
+### Cloud LLM Providers
+
+The Claw can optionally use cloud LLM backends (Claude, Gemini) instead of or alongside local inference. Cloud providers use the same OpenAI-compatible protocol, so tool calling and all agent features work identically.
+
+**Configuration in `config.yaml`:**
+
+```yaml
+cloud_llm:
+  active_provider: "local"  # "local", "claude", or "gemini"
+  failover_to_local: true   # fall back to local if cloud fails
+  failover_chain: []        # ordered list, e.g. ["claude", "gemini", "local"]
+  providers:
+    claude:
+      enabled: true
+      model: "claude-sonnet-4-20250514"
+      api_key_secret: "claude_api_key"  # looked up in SecretStore
+      max_tokens: 4096
+      timeout: 60
+    gemini:
+      enabled: true
+      model: "gemini-2.5-flash"
+      api_key_secret: "gemini_api_key"
+      max_tokens: 4096
+      timeout: 60
+```
+
+API keys are stored in the SecretStore (not in config.yaml). Set them via the admin panel Settings or by placing them in `data/secrets/`.
+
+The `failover_chain` lets you define an ordered list of providers to try. For example, `["claude", "local"]` will attempt Claude first, then fall back to local inference on timeout or server errors. If `failover_chain` is empty, the `failover_to_local` flag controls simple local fallback.
+
+The active provider can also be switched at runtime through the admin panel without restarting.
+
+### Scheduler (Reminders)
+
+The scheduler runs in the background and fires reminders at their scheduled time. Reminders are created via the notes MCP tool (voice or chat) and stored in `data/notes/reminders.json`.
+
+When a reminder fires, it:
+- Broadcasts an SSE event to the admin panel
+- Speaks the reminder via TTS (pausing music if playing, then resuming)
+- Removes the fired reminder from the file
+- On startup, checks for and fires any reminders missed during downtime
+
+**Configuration in `config.yaml`:**
+
+```yaml
+scheduler:
+  enabled: true
+  poll_interval: 30   # seconds between checks
+  announce_tts: true   # speak reminders aloud
+```
+
+The scheduler is enabled by default. No additional setup is required.
+
+### Webhooks
+
+Webhooks allow external systems (e.g., Home Assistant, IFTTT, custom scripts) to send events to The Claw. The endpoint is `POST /api/webhook` on the admin panel.
+
+Supported event types:
+- **`message`** -- feeds text to the agent and returns the response (like typing in chat)
+- **`notification`** -- broadcasts a message via SSE and optionally speaks it via TTS
+- **`reminder`** -- creates a scheduled reminder
+
+**Configuration in `config.yaml`:**
+
+```yaml
+webhook:
+  enabled: true
+  secret: "your-hmac-secret"       # HMAC-SHA256 verification; empty = no verification
+  allowed_events:
+    - message
+    - reminder
+    - notification
+```
+
+**Example request:**
+
+```bash
+# Send a message (returns agent response)
+curl -X POST http://<device-ip>:8080/api/webhook \
+  -H "Content-Type: application/json" \
+  -H "X-Signature: sha256=<hmac-hex>" \
+  -d '{"type": "message", "payload": {"text": "What is the weather?"}, "source": "home-assistant"}'
+
+# Send a notification (spoken + displayed)
+curl -X POST http://<device-ip>:8080/api/webhook \
+  -H "Content-Type: application/json" \
+  -d '{"type": "notification", "payload": {"title": "Front Door", "message": "Someone is at the door"}}'
+```
+
+If `secret` is set, requests must include an `X-Signature` header with `sha256=<hex>` where the hex value is the HMAC-SHA256 of the request body using the configured secret.
+
+### Remote Access and Android App
+
+The Claw includes a remote access API and an Android companion app for interacting from outside the local network over a WireGuard VPN tunnel.
+
+**Remote API endpoints** (all under `/api/remote/`):
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/ping` | GET | Health check |
+| `/chat` | POST | Text chat |
+| `/tts` | POST | Text-to-speech (returns WAV) |
+| `/status` | GET | System status |
+| `/events` | GET | SSE real-time updates |
+| `/audio` | WS | Voice interaction (WebSocket) |
+
+The WebSocket voice endpoint accepts 16kHz 16-bit mono PCM audio and supports push-to-talk, client-side wake word, and server-side wake word modes. Authentication uses per-device API keys via `X-API-Key` header (or `?key=` query parameter for WebSocket).
+
+**Configuration in `config.yaml`:**
+
+```yaml
+remote:
+  enabled: true
+  audio_output: "phone"   # "phone" or "computer" — where TTS audio plays
+  wg_interface: "wg0"
+  wg_subnet: "10.10.0"
+  wg_port: 51820
+  wg_endpoint: ""          # public IP or hostname for the server
+```
+
+**WireGuard setup:**
+
+```bash
+sudo bash scripts/setup-wireguard.sh
+```
+
+This creates the WireGuard interface and generates server/client key pairs. Set `remote.wg_endpoint` to your server's public IP after setup.
+
+**Android app** (`claw-android/`):
+
+The companion app is a Kotlin/Jetpack Compose application (Android 8.0+, API 26) that provides:
+- On-device "Hey Claw" wake word detection (ONNX Runtime)
+- Voice streaming to the server over WireGuard VPN
+- Text chat interface
+- Music playback with YouTube audio proxy
+- QR code scanning for quick server pairing
+- Android Auto support
+- Embedded WireGuard tunnel (no separate WireGuard app required)
+
+Build the APK with Android Studio or Gradle:
+
+```bash
+cd claw-android
+./gradlew assembleDebug
+# Output: claw-android/app/build/outputs/apk/debug/claw-debug.apk
+```
+
+A pre-built debug APK is available at `claw-android/claw-debug.apk`. The APK filename is always `claw.apk` or `claw-debug.apk` (never version-suffixed).
+
+### Usage Tracking
+
+The Claw tracks token usage per provider (local, Claude, Gemini) with daily breakdowns and cost estimates. Usage data is persisted to disk and survives restarts.
+
+**Configuration in `config.yaml`:**
+
+```yaml
+usage:
+  enabled: true
+  persist_file: "data/usage.json"
+  persist_interval: 60   # seconds between disk writes
+```
+
+Usage stats are visible in the admin panel. Cost estimates use per-provider pricing (local inference is free).
+
 ## Updating
 
 To update The Claw to the latest version:

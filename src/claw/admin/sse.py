@@ -40,7 +40,7 @@ class StatusBroadcaster:
             log.debug("SSE subscriber removed (total: %d)", len(self._subscribers))
 
     # Events that should be persisted in the status snapshot
-    _PERSISTENT_EVENTS = {"status", "transcription", "response", "memory", "mcp", "llm_provider"}
+    _PERSISTENT_EVENTS = {"status", "transcription", "response", "memory", "mcp", "llm_provider", "inbox"}
 
     async def broadcast(self, event: str, data: dict) -> None:
         """Send an event to all subscribers."""

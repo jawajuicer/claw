@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}Skills{% endblock %}
+
+{% block content %}
+<h2>Skills</h2>
+<p>Install and manage MCP tool skills from Git repositories.</p>
+
+<div class="settings-card">
+    <div class="settings-card-header">
+        <h3>Install Skill</h3>
+    </div>
+    <div class="settings-grid">
+        <div>
+            <label for="skill-url">Git URL</label>
+            <input type="url" id="skill-url" placeholder="https://github.com/user/claw-skill-example.git">
+            <span class="field-desc">HTTPS Git URL of the skill repository (must contain skill.json)</span>
+        </div>
+        <div>
+            <label for="skill-name">Name (optional)</label>
+            <input type="text" id="skill-name" placeholder="Auto-detected from URL">
+            <span class="field-desc">Override the skill name. Defaults to repository name.</span>
+        </div>
+    </div>
+    <button type="button" onclick="installSkill()">Install</button>
+    <div id="install-status"></div>
+</div>
+
+<div class="settings-card">
+    <div class="settings-card-header">
+        <h3>Installed Skills</h3>
+    </div>
+    <div id="skills-list">
+        <p>Loading...</p>
+    </div>
+</div>
+
+<script>
+function esc(str) {
+    const d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
+}
+
+async function loadSkills() {
+    try {
+        const resp = await fetch('/api/skills');
+        const skills = await resp.json();
+        const container = document.getElementById('skills-list');
+        if (!skills.length) {
+            container.innerHTML = '<p>No skills installed.</p>';
+            return;
+        }
+        container.innerHTML = skills.map(s => `
+            <div class="skill-item" style="display:flex;justify-content:space-between;align-items:center;padding:0.5rem 0;border-bottom:1px solid var(--pico-muted-border-color)">
+                <div>
+                    <strong>${esc(s.name)}</strong> <small>v${esc(s.version)}</small>
+                    ${s.description ? `<br><span class="field-desc">${esc(s.description)}</span>` : ''}
+                    ${s.author ? `<br><small>by ${esc(s.author)}</small>` : ''}
+                </div>
+                <button type="button" class="secondary outline" onclick="uninstallSkill('${esc(s.name)}')">Uninstall</button>
+            </div>
+        `).join('');
+    } catch (e) {
+        document.getElementById('skills-list').innerHTML = '<p>Error loading skills.</p>';
+    }
+}
+
+async function installSkill() {
+    const url = document.getElementById('skill-url').value.trim();
+    const name = document.getElementById('skill-name').value.trim();
+    const status = document.getElementById('install-status');
+    if (!url) { status.textContent = 'Please enter a Git URL.'; return; }
+    status.textContent = 'Installing...';
+    try {
+        const resp = await fetch('/api/skills/install', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({git_url: url, name: name || undefined}),
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            status.textContent = `Installed ${data.name} v${data.version}`;
+            document.getElementById('skill-url').value = '';
+            document.getElementById('skill-name').value = '';
+            loadSkills();
+        } else {
+            status.textContent = `Error: ${data.error}`;
+        }
+    } catch (e) {
+        status.textContent = `Error: ${e.message}`;
+    }
+}
+
+async function uninstallSkill(name) {
+    if (!confirm(`Uninstall skill "${name}"?`)) return;
+    try {
+        const resp = await fetch(`/api/skills/${name}`, {method: 'DELETE'});
+        const data = await resp.json();
+        if (resp.ok) loadSkills();
+        else alert(data.error);
+    } catch (e) {
+        alert(e.message);
+    }
+}
+
+loadSkills();
+</script>
+{% endblock %}

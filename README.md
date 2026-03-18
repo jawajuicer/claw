@@ -7,9 +7,15 @@ A local-first voice AI agent with MCP tool calling. Privacy-first: zero cloud au
 - **Voice-activated** -- custom "Hey Claw" wake word with openWakeWord (ONNX)
 - **Local speech-to-text** -- faster-whisper for on-device transcription
 - **Local LLM** -- llama-swap + llama.cpp inference via the OpenAI SDK (any GGUF model: qwen, llama, mistral, etc.)
+- **Cloud LLM failover** -- optional Claude and Gemini backends with configurable failover chains
 - **Text-to-speech** -- Piper TTS (ONNX) with optional Fish Speech support
 - **MCP tool calling** -- extensible tool servers discovered automatically from `mcp_tools/`
 - **Conversational memory** -- ChromaDB vector store with automatic fact extraction
+- **Scheduler** -- background reminder system with TTS announcements and SSE notifications
+- **Webhooks** -- inbound event API with HMAC-SHA256 verification for external integrations
+- **Android app** -- Kotlin/Compose companion app with on-device wake word, voice streaming over WireGuard VPN, and Android Auto support
+- **Remote access** -- REST API and WebSocket voice sessions over WireGuard for mobile clients
+- **Usage tracking** -- per-provider token counting with daily breakdowns and cost estimates
 - **Web admin panel** -- htmx + Pico CSS dashboard with live status, chat, settings, and logs
 - **Config hot-reload** -- edit `config.yaml` and changes apply immediately (no restart)
 - **Systemd service** -- runs as a user service under PipeWire
@@ -17,36 +23,38 @@ A local-first voice AI agent with MCP tool calling. Privacy-first: zero cloud au
 ## Architecture
 
 ```
-                         +------------------+
-                         |   Admin Panel    |
-                         | (FastAPI + htmx) |
-                         +--------+---------+
-                                  |
+    +-------------+                           +------------------+
+    | Android App |--- WireGuard VPN -------->|   Admin Panel    |
+    | (Kotlin/    |   (REST + WebSocket)      | (FastAPI + htmx) |
+    |  Compose)   |                           +---+---------+----+
+    +-------------+                               |         |
+                                           Webhooks|    Remote API
     +-----------------------------+-----------------------------+
     |                        Orchestrator                       |
     |                        (Claw class)                       |
-    +-----+----------+----------+-----------+----------+--------+
-          |          |          |           |          |
-    +-----+--+ +----+----+ +---+----+ +----+---+ +---+--------+
-    | Audio   | | Agent   | | Memory | | MCP    | | TTS        |
-    | Pipeline| | Core    | | Engine | | Handler| | Manager    |
-    +----+----+ +----+----+ +---+----+ +----+---+ +---+--------+
-         |           |          |           |          |
-    sounddevice  OpenAI SDK  ChromaDB    stdio     piper-tts
-    openWakeWord  llama.cpp  sentence-  sessions   (or Fish
-    faster-whisper           transformers           Speech)
-                                          |
-                              +-----------+-----------+
-                              |     MCP Tool Servers  |
-                              +-----------------------+
-                              | youtube_music         |
-                              | weather               |
-                              | gmail                 |
-                              | google_calendar       |
-                              | local_calendar        |
-                              | notes                 |
-                              | system_control        |
-                              +-----------------------+
+    +--+-------+-------+-------+-------+-------+-------+-------+
+       |       |       |       |       |       |       |
+    +--+---+ +-+----+ ++----+ ++----+ ++----+ ++----+ ++---------+
+    |Audio | |Agent | |Mem- | |MCP  | |TTS  | |Sche-| |Usage     |
+    |Pipe- | |Core  | |ory  | |Hand-| |Mgr  | |duler| |Tracker   |
+    |line  | |      | |Eng. | |ler  | |     | |     | |          |
+    +--+---+ +-+-+--+ ++----+ ++----+ ++----+ ++----+ +----------+
+       |       | |      |       |       |       |
+    sound-   local|   ChromaDB stdio  piper  reminders
+    device   llm  |   sentence- sess. (Fish  (JSON)
+    openWake      |   trans.    ions  Speech)
+    Word   cloud failover        |
+    faster- (Claude,    +--------+--------+
+    whisper  Gemini)    |  MCP Tool Servers |
+                        +------------------+
+                        | youtube_music    |
+                        | weather          |
+                        | gmail            |
+                        | google_calendar  |
+                        | local_calendar   |
+                        | notes            |
+                        | system_control   |
+                        +------------------+
 ```
 
 ### Pipeline Flow
@@ -54,9 +62,10 @@ A local-first voice AI agent with MCP tool calling. Privacy-first: zero cloud au
 1. **Wake word detection** -- sounddevice streams audio to openWakeWord, which listens for "Hey Claw" (or other configured wake words)
 2. **Audio capture** -- once triggered, records speech until silence is detected
 3. **Transcription** -- faster-whisper converts audio to text locally
-4. **Agent processing** -- the LLM (via llama-swap/llama.cpp) processes the query, optionally calling MCP tools in a bounded loop (max 5 iterations)
+4. **Agent processing** -- the LLM processes the query, optionally calling MCP tools in a bounded loop (max 5 iterations). By default uses local inference (llama-swap/llama.cpp); can optionally route to Claude or Gemini with automatic failover.
 5. **Response** -- the answer is spoken via TTS and displayed in the admin panel
 6. **Memory** -- conversations are stored in ChromaDB; facts are extracted in the background
+7. **Background tasks** -- the scheduler fires due reminders via TTS and SSE; the usage tracker logs token counts per provider
 
 ## Quick Start
 
@@ -161,8 +170,14 @@ The Claw uses a layered configuration system with this priority (highest first):
 | `whisper` | STT model size, compute type, language |
 | `tts` | TTS engine (piper/fish_speech), voice model, speed, enable/disable |
 | `llm` | LLM server URL, model name, temperature, max tokens, context window, system prompt |
+| `cloud_llm` | Cloud provider backends (Claude, Gemini), active provider, failover chain |
+| `compute` | GPU backend (cpu/cuda/rocm/vulkan), GPU layers |
 | `memory` | ChromaDB path, embedding model, result limits |
 | `mcp` | Tools directory, enabled servers, startup timeout |
+| `scheduler` | Reminder polling interval, TTS announcements |
+| `webhook` | Inbound webhook enable, HMAC secret, allowed event types |
+| `remote` | Remote access enable, WireGuard VPN settings, audio output routing |
+| `usage` | Token/cost tracking enable, persistence file and interval |
 | `youtube_music` | Auth file, playback defaults, history |
 | `weather` | API key, default location |
 | `notes` | Storage directory, max notes limit |
@@ -207,10 +222,14 @@ claw/
     main.py              # Orchestrator (Claw class)
     config.py            # Settings with YAML + env loading
     admin/               # FastAPI admin panel (htmx + Pico CSS + SSE)
-    agent_core/          # LLM client and agent loop
+      webhook.py         # Inbound webhook handler (HMAC verification)
+      remote.py          # Remote API + WebSocket voice sessions
+    agent_core/          # LLM client (local + cloud failover) and agent loop
+      usage_tracker.py   # Per-provider token/cost tracking
     audio_pipeline/      # Capture, wake word, transcriber, chime, TTS
     mcp_handler/         # MCP client, registry, and tool router
     memory_engine/       # ChromaDB store and retriever
+    scheduler/           # Background reminder scheduler
   mcp_tools/
     system_control/      # Time, uptime, disk, memory
     weather/             # OpenWeatherMap + Open-Meteo fallback
@@ -219,6 +238,8 @@ claw/
     youtube_music/       # Music playback via ytmusicapi + mpv
     google_calendar/     # Google Calendar API
     gmail/               # Gmail API
+  claw-android/          # Android companion app (Kotlin/Compose)
+  scripts/               # Utility scripts (WireGuard setup, etc.)
   training/              # Wake word training scripts and config
   data/                  # Runtime data (ChromaDB, models, notes, etc.)
   config.yaml            # Primary configuration file

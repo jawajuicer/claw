@@ -151,13 +151,17 @@ class CloudProvider(BaseModel):
 
 class CloudLLMConfig(BaseModel):
     """Optional cloud LLM backends (Claude, Gemini) as alternatives to local inference."""
-    active_provider: str = "local"  # "local", "claude", "gemini"
+    active_provider: str = "local"  # "local", "claude", "claude-cli", "gemini"
     providers: dict[str, CloudProvider] = Field(default_factory=lambda: {
         "claude": CloudProvider(
             base_url="https://api.anthropic.com/v1/",
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             api_key_secret="claude_api_key",
             max_tokens=4096,
+        ),
+        "claude-cli": CloudProvider(
+            model="sonnet",
+            timeout=120,
         ),
         "gemini": CloudProvider(
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
@@ -272,6 +276,85 @@ class SchedulerConfig(BaseModel):
     enabled: bool = True
     poll_interval: int = 30  # seconds between checks
     announce_tts: bool = True  # speak reminders via TTS
+    cron_storage: str = "data/scheduler/cron_jobs.json"
+
+
+# ── Bridge configs ─────────────────────────────────────────────────────────
+
+class TelegramBridgeConfig(BaseModel):
+    enabled: bool = False
+    token_secret: str = "telegram_bot_token"
+    mode: str = "polling"  # "polling" or "webhook"
+    webhook_secret: str = ""
+    allowed_users: list[str] = Field(default_factory=list)
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def validate_mode(cls, v):
+        if v not in ("polling", "webhook"):
+            raise ValueError(f"mode must be 'polling' or 'webhook', got {v!r}")
+        return v
+
+
+class DiscordBridgeConfig(BaseModel):
+    enabled: bool = False
+    token_secret: str = "discord_bot_token"
+    allowed_channels: list[str] = Field(default_factory=list)
+    allowed_users: list[str] = Field(default_factory=list)
+
+
+class SlackBridgeConfig(BaseModel):
+    enabled: bool = False
+    bot_token_secret: str = "slack_bot_token"
+    app_token_secret: str = "slack_app_token"
+    allowed_channels: list[str] = Field(default_factory=list)
+    allowed_users: list[str] = Field(default_factory=list)
+
+
+class TwilioBridgeConfig(BaseModel):
+    enabled: bool = False
+    account_sid_secret: str = "twilio_account_sid"
+    auth_token_secret: str = "twilio_auth_token"
+    from_number: str = ""
+    allowed_numbers: list[str] = Field(default_factory=list)
+
+
+class MatrixBridgeConfig(BaseModel):
+    enabled: bool = False
+    homeserver: str = "https://matrix.org"
+    user_id: str = ""
+    token_secret: str = "matrix_access_token"
+    allowed_rooms: list[str] = Field(default_factory=list)
+    allowed_users: list[str] = Field(default_factory=list)
+
+
+class IRCBridgeConfig(BaseModel):
+    enabled: bool = False
+    server: str = "irc.libera.chat"
+    port: int = 6697
+    nickname: str = "claw-bot"
+    channels: list[str] = Field(default_factory=list)
+    password_secret: str = ""
+    use_tls: bool = True
+    allowed_users: list[str] = Field(default_factory=list)
+
+
+class BridgesConfig(BaseModel):
+    telegram: TelegramBridgeConfig = Field(default_factory=TelegramBridgeConfig)
+    discord: DiscordBridgeConfig = Field(default_factory=DiscordBridgeConfig)
+    slack: SlackBridgeConfig = Field(default_factory=SlackBridgeConfig)
+    twilio: TwilioBridgeConfig = Field(default_factory=TwilioBridgeConfig)
+    matrix: MatrixBridgeConfig = Field(default_factory=MatrixBridgeConfig)
+    irc: IRCBridgeConfig = Field(default_factory=IRCBridgeConfig)
+
+
+class BrowserConfig(BaseModel):
+    enabled: bool = False
+    max_page_load_ms: int = 30000
+    max_content_chars: int = 50000
+    blocked_domains: list[str] = Field(default_factory=lambda: [
+        "*.bank.*", "*.gov", "localhost", "127.0.0.*",
+    ])
 
 
 class UsageConfig(BaseModel):
@@ -440,6 +523,8 @@ class Settings(BaseSettings):
     usage: UsageConfig = Field(default_factory=UsageConfig)
     chat: ChatConfig = Field(default_factory=ChatConfig)
     admin: AdminConfig = Field(default_factory=AdminConfig)
+    bridges: BridgesConfig = Field(default_factory=BridgesConfig)
+    browser: BrowserConfig = Field(default_factory=BrowserConfig)
 
     @classmethod
     def settings_customise_sources(

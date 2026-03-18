@@ -1914,3 +1914,215 @@ async def api_delete_google_account(label: str):
     reload_settings()
 
     return {"status": "ok", "message": f"Account '{label}' removed"}
+
+
+# ── Cron Jobs API ──────────────────────────────────────────────────────────
+
+@router.get("/api/cron")
+async def api_list_cron_jobs(request: Request):
+    """List all cron jobs."""
+    cron_manager = getattr(request.app.state, "cron_manager", None)
+    if not cron_manager:
+        return JSONResponse({"error": "Cron manager not initialized"}, status_code=503)
+    return cron_manager.list_jobs()
+
+
+@router.post("/api/cron")
+async def api_create_cron_job(request: Request):
+    """Create a new cron job."""
+    cron_manager = getattr(request.app.state, "cron_manager", None)
+    if not cron_manager:
+        return JSONResponse({"error": "Cron manager not initialized"}, status_code=503)
+
+    body = await request.json()
+    try:
+        job = cron_manager.create(
+            name=body.get("name", ""),
+            schedule=body.get("schedule", ""),
+            job_type=body.get("type", "notification"),
+            payload=body.get("payload"),
+        )
+        return {"status": "created", "job": job.to_dict()}
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
+@router.delete("/api/cron/{job_id}")
+async def api_delete_cron_job(job_id: str, request: Request):
+    """Delete a cron job."""
+    cron_manager = getattr(request.app.state, "cron_manager", None)
+    if not cron_manager:
+        return JSONResponse({"error": "Cron manager not initialized"}, status_code=503)
+
+    if cron_manager.delete(job_id):
+        return {"status": "deleted"}
+    return JSONResponse({"error": "Job not found"}, status_code=404)
+
+
+# ── Inbox API ──────────────────────────────────────────────────────────────
+
+@router.get("/api/inbox")
+async def api_check_inbox(request: Request):
+    """Check inbox messages."""
+    inbox = getattr(request.app.state, "inbox", None)
+    if not inbox:
+        return JSONResponse({"error": "Inbox not initialized"}, status_code=503)
+
+    unread_only = request.query_params.get("unread_only", "false").lower() == "true"
+    messages = inbox.check(unread_only=unread_only)
+    return {"messages": messages, "unread_count": inbox.unread_count}
+
+
+@router.post("/api/inbox")
+async def api_send_to_inbox(request: Request):
+    """Send a message to the inbox."""
+    inbox = getattr(request.app.state, "inbox", None)
+    if not inbox:
+        return JSONResponse({"error": "Inbox not initialized"}, status_code=503)
+
+    body = await request.json()
+    message = await inbox.send(
+        sender=body.get("sender", "admin"),
+        subject=body.get("subject", ""),
+        body=body.get("body", ""),
+        priority=body.get("priority", "normal"),
+    )
+    return {"status": "sent", "message": message}
+
+
+@router.post("/api/inbox/{message_id}/read")
+async def api_mark_inbox_read(message_id: str, request: Request):
+    """Mark an inbox message as read."""
+    inbox = getattr(request.app.state, "inbox", None)
+    if not inbox:
+        return JSONResponse({"error": "Inbox not initialized"}, status_code=503)
+
+    if inbox.mark_read(message_id):
+        return {"status": "ok"}
+    return JSONResponse({"error": "Message not found"}, status_code=404)
+
+
+@router.delete("/api/inbox")
+async def api_clear_inbox(request: Request):
+    """Clear inbox messages."""
+    inbox = getattr(request.app.state, "inbox", None)
+    if not inbox:
+        return JSONResponse({"error": "Inbox not initialized"}, status_code=503)
+
+    read_only = request.query_params.get("read_only", "true").lower() == "true"
+    cleared = inbox.clear(read_only=read_only)
+    return {"status": "ok", "cleared": cleared}
+
+
+# ── Skills API ─────────────────────────────────────────────────────────────
+
+@router.get("/skills", response_class=HTMLResponse)
+async def skills_page(request: Request):
+    """Skills management page."""
+    templates = request.app.state.templates
+    return templates.TemplateResponse("skills.html", {"request": request})
+
+
+@router.get("/api/skills")
+async def api_list_skills(request: Request):
+    """List installed skills."""
+    skill_manager = getattr(request.app.state, "skill_manager", None)
+    if not skill_manager:
+        return JSONResponse({"error": "Skill manager not initialized"}, status_code=503)
+    return skill_manager.list_skills()
+
+
+@router.post("/api/skills/install")
+async def api_install_skill(request: Request):
+    """Install a skill from a Git URL."""
+    skill_manager = getattr(request.app.state, "skill_manager", None)
+    if not skill_manager:
+        return JSONResponse({"error": "Skill manager not initialized"}, status_code=503)
+
+    body = await request.json()
+    try:
+        result = skill_manager.install(
+            git_url=body.get("git_url", ""),
+            name=body.get("name") or None,
+        )
+        return {"status": "installed", **result}
+    except (ValueError, RuntimeError) as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
+@router.delete("/api/skills/{name}")
+async def api_uninstall_skill(name: str, request: Request):
+    """Uninstall a skill."""
+    skill_manager = getattr(request.app.state, "skill_manager", None)
+    if not skill_manager:
+        return JSONResponse({"error": "Skill manager not initialized"}, status_code=503)
+
+    try:
+        if skill_manager.uninstall(name):
+            return {"status": "uninstalled"}
+        return JSONResponse({"error": "Skill not found"}, status_code=404)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
+# ── Pairing API ────────────────────────────────────────────────────────────
+
+@router.post("/api/remote/pair")
+async def api_generate_pairing_code(request: Request):
+    """Generate a pairing code for device registration (authenticated)."""
+    pairing_manager = getattr(request.app.state, "pairing_manager", None)
+    if not pairing_manager:
+        return JSONResponse({"error": "Pairing not initialized"}, status_code=503)
+
+    body = await request.json()
+    try:
+        code = pairing_manager.generate(device_name=body.get("device_name", ""))
+        return {"code": code, "ttl_seconds": 300}
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=429)
+
+
+@router.post("/api/remote/pair/claim")
+async def api_claim_pairing_code(request: Request):
+    """Claim a pairing code to register a device (unauthenticated).
+
+    The code itself acts as the authentication credential.
+    """
+    pairing_manager = getattr(request.app.state, "pairing_manager", None)
+    if not pairing_manager:
+        return JSONResponse({"error": "Pairing not initialized"}, status_code=503)
+
+    body = await request.json()
+    code = body.get("code", "")
+    if not code:
+        return JSONResponse({"error": "code is required"}, status_code=400)
+
+    client_ip = request.client.host if request.client else ""
+
+    try:
+        pairing = pairing_manager.claim(code, client_ip=client_ip)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=429)
+
+    if pairing is None:
+        return JSONResponse({"error": "Invalid or expired code"}, status_code=401)
+
+    # Create a device using the existing device registration logic
+    from claw.admin.api_key import create_device
+    device_name = pairing.device_name or f"paired-{code[:4]}"
+    try:
+        device_info = create_device(device_name)
+        return {"status": "paired", "device": device_info}
+    except Exception as e:
+        return JSONResponse({"error": f"Device creation failed: {e}"}, status_code=500)
+
+
+# ── Bridge Status API ──────────────────────────────────────────────────────
+
+@router.get("/api/bridge/status")
+async def api_bridge_status(request: Request):
+    """Get status of all messaging bridge adapters."""
+    bridge_manager = getattr(request.app.state, "bridge_manager", None)
+    if not bridge_manager:
+        return {"adapters": {}, "running": False}
+    return {"adapters": bridge_manager.get_status(), "running": bridge_manager.running}

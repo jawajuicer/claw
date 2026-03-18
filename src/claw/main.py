@@ -71,6 +71,21 @@ class Claw:
         # Scheduler (initialized in initialize())
         self.scheduler = None
 
+        # Cron manager (initialized in initialize())
+        self.cron_manager = None
+
+        # Bridge manager (initialized in initialize())
+        self.bridge_manager = None
+
+        # Inbox (initialized in initialize())
+        self.inbox = None
+
+        # Skill manager (initialized in initialize())
+        self.skill_manager = None
+
+        # Pairing manager (initialized in initialize())
+        self.pairing_manager = None
+
         # Shared transcriber (initialized in initialize() when remote enabled)
         self.transcriber = None
 
@@ -128,6 +143,66 @@ class Claw:
             log.exception("Scheduler initialization failed (non-fatal, continuing)")
             self.scheduler = None
             self.admin_app.state.scheduler = None
+
+        # Cron manager (extends scheduler with recurring jobs)
+        try:
+            from claw.scheduler.cron_manager import CronManager
+
+            self.cron_manager = CronManager(
+                broadcaster=self.broadcaster,
+                agent=self.agent,
+                router=self.router,
+                tts=self.tts,
+                chat_lock=self.admin_app.state.chat_lock,
+                registry=self.registry,
+            )
+            self.admin_app.state.cron_manager = self.cron_manager
+            log.info("Cron manager initialized (%d jobs)", len(self.cron_manager.list_jobs()))
+        except ImportError:
+            log.info("Cron manager not available (croniter not installed)")
+        except Exception:
+            log.exception("Cron manager initialization failed (non-fatal)")
+
+        # Inbox
+        try:
+            from claw.agent_core.inbox import Inbox
+
+            self.inbox = Inbox(broadcaster=self.broadcaster)
+            self.admin_app.state.inbox = self.inbox
+        except Exception:
+            log.exception("Inbox initialization failed (non-fatal)")
+
+        # Skill manager
+        try:
+            from claw.skills.manager import SkillManager
+
+            self.skill_manager = SkillManager()
+            self.admin_app.state.skill_manager = self.skill_manager
+        except Exception:
+            log.exception("Skill manager initialization failed (non-fatal)")
+
+        # Pairing manager
+        try:
+            from claw.admin.pairing import PairingManager
+
+            self.pairing_manager = PairingManager()
+            self.admin_app.state.pairing_manager = self.pairing_manager
+        except Exception:
+            log.exception("Pairing manager initialization failed (non-fatal)")
+
+        # Bridge manager (messaging platforms)
+        try:
+            from claw.bridge.manager import BridgeManager
+
+            self.bridge_manager = BridgeManager(
+                agent=self.agent,
+                registry=self.registry,
+                broadcaster=self.broadcaster,
+                chat_lock=self.admin_app.state.chat_lock,
+            )
+            self.admin_app.state.bridge_manager = self.bridge_manager
+        except Exception:
+            log.exception("Bridge manager initialization failed (non-fatal)")
 
         # Shared transcriber for remote audio (loaded when remote is enabled)
         if self.settings.remote.enabled:
@@ -422,6 +497,14 @@ class Claw:
         if self.scheduler:
             tasks.append(asyncio.create_task(self.scheduler.run(), name="scheduler"))
 
+        # Cron job polling (piggybacks on scheduler poll interval)
+        if self.cron_manager:
+            tasks.append(asyncio.create_task(self._cron_poll_loop(), name="cron_poll"))
+
+        # Messaging bridges
+        if self.bridge_manager:
+            tasks.append(asyncio.create_task(self.bridge_manager.run(), name="bridge_manager"))
+
         # Usage persistence
         tasks.append(asyncio.create_task(self._persist_usage_loop(), name="persist_usage"))
 
@@ -450,8 +533,11 @@ class Claw:
                 should_shutdown = False
                 for task in done:
                     name = task.get_name()
-                    if task.exception():
-                        log.error("Task %s failed", name, exc_info=task.exception())
+                    if task.cancelled():
+                        continue
+                    exc = task.exception()
+                    if exc:
+                        log.error("Task %s failed", name, exc_info=exc)
                         if name in critical_names:
                             should_shutdown = True
                     else:
@@ -472,6 +558,8 @@ class Claw:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             await self.registry.shutdown()
+            if self.bridge_manager:
+                await self.bridge_manager.stop()
             if self.scheduler:
                 self.scheduler.stop()
             if self.tts:
@@ -489,6 +577,20 @@ class Claw:
         task = asyncio.create_task(coro)
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
+
+    async def _cron_poll_loop(self) -> None:
+        """Periodically check and dispatch due cron jobs."""
+        cfg = self.settings.scheduler
+        log.info("Cron poll loop started (every %ds)", cfg.poll_interval)
+        try:
+            while not self._shutdown_event.is_set():
+                await asyncio.sleep(cfg.poll_interval)
+                try:
+                    await self.cron_manager.check_and_dispatch()
+                except Exception:
+                    log.exception("Cron dispatch error")
+        except asyncio.CancelledError:
+            pass
 
     async def _persist_usage_loop(self) -> None:
         """Periodically save usage data to disk."""

@@ -1142,6 +1142,97 @@ curl -X POST http://HOST:8080/api/webhook \
         </div>
     </div>
 
+    {# ── Messaging Bridges ────────────────────────────────────────────── #}
+    <div class="settings-card">
+        <div class="settings-card-header">
+            <h3>Messaging Bridges</h3>
+        </div>
+        <p class="field-desc" style="margin-bottom:1rem;">
+            Connect Claw to messaging platforms. Each platform requires its own bot token stored in the secret store.
+        </p>
+        <div class="settings-grid">
+            <div>
+                <label>
+                    <input type="checkbox" name="bridges.telegram.enabled" role="switch"
+                           {% if settings.bridges.telegram.enabled %}checked{% endif %}>
+                    Telegram
+                </label>
+                <span class="field-desc">Token key: <code>telegram_bot_token</code></span>
+            </div>
+            <div>
+                <label>
+                    <input type="checkbox" name="bridges.discord.enabled" role="switch"
+                           {% if settings.bridges.discord.enabled %}checked{% endif %}>
+                    Discord
+                </label>
+                <span class="field-desc">Token key: <code>discord_bot_token</code></span>
+            </div>
+            <div>
+                <label>
+                    <input type="checkbox" name="bridges.slack.enabled" role="switch"
+                           {% if settings.bridges.slack.enabled %}checked{% endif %}>
+                    Slack
+                </label>
+                <span class="field-desc">Token keys: <code>slack_bot_token</code>, <code>slack_app_token</code></span>
+            </div>
+            <div>
+                <label>
+                    <input type="checkbox" name="bridges.twilio.enabled" role="switch"
+                           {% if settings.bridges.twilio.enabled %}checked{% endif %}>
+                    Twilio (SMS/WhatsApp)
+                </label>
+                <span class="field-desc">Token keys: <code>twilio_account_sid</code>, <code>twilio_auth_token</code></span>
+            </div>
+            <div>
+                <label>
+                    <input type="checkbox" name="bridges.matrix.enabled" role="switch"
+                           {% if settings.bridges.matrix.enabled %}checked{% endif %}>
+                    Matrix
+                </label>
+                <span class="field-desc">Token key: <code>matrix_access_token</code></span>
+            </div>
+            <div>
+                <label>
+                    <input type="checkbox" name="bridges.irc.enabled" role="switch"
+                           {% if settings.bridges.irc.enabled %}checked{% endif %}>
+                    IRC
+                </label>
+                <span class="field-desc">No external dependency required.</span>
+            </div>
+        </div>
+    </div>
+
+    {# ── Cron Jobs ─────────────────────────────────────────────────────── #}
+    <div class="settings-card">
+        <div class="settings-card-header">
+            <h3>Cron Jobs</h3>
+        </div>
+        <p class="field-desc" style="margin-bottom:1rem;">
+            Recurring scheduled tasks. Requires the <code>croniter</code> package (<code>pip install claw[scheduler]</code>).
+        </p>
+        <div id="cron-jobs-list">
+            <p class="field-desc"><em>Loading...</em></p>
+        </div>
+        <button type="button" class="secondary outline" onclick="loadCronJobs()">Refresh</button>
+    </div>
+
+    {# ── Browser Control ───────────────────────────────────────────────── #}
+    <div class="settings-card">
+        <div class="settings-card-header">
+            <h3>Browser Control</h3>
+        </div>
+        <div class="settings-grid">
+            <div>
+                <label>
+                    <input type="checkbox" name="browser.enabled" role="switch"
+                           {% if settings.browser.enabled %}checked{% endif %}>
+                    Enable Browser Tool
+                </label>
+                <span class="field-desc">Requires Playwright (<code>pip install claw[browser]</code> + <code>playwright install chromium</code>).</span>
+            </div>
+        </div>
+    </div>
+
     <div id="toast-container"></div>
     <button type="button" id="save-btn">Save Settings</button>
 </form>
@@ -2168,5 +2259,42 @@ function testWebhook() {
     })
     .finally(() => { btn.disabled = false; });
 }
+
+/* ── Cron Jobs management ─────────────────────────────────────── */
+
+function loadCronJobs() {
+    fetch('/api/cron')
+    .then(r => r.json())
+    .then(jobs => {
+        const container = document.getElementById('cron-jobs-list');
+        if (!Array.isArray(jobs) || jobs.length === 0) {
+            container.innerHTML = '<p class="field-desc"><em>No cron jobs configured. Use voice or chat: "create a daily cron job at 9am to check the weather"</em></p>';
+            return;
+        }
+        container.innerHTML = jobs.map(j => `
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:0.5rem 0;border-bottom:1px solid var(--pico-muted-border-color)">
+                <div>
+                    <strong>${j.name}</strong> <code style="font-size:0.8rem">${j.schedule}</code>
+                    <small>[${j.type}]</small>
+                    ${j.next_run ? `<br><span class="field-desc">Next: ${new Date(j.next_run).toLocaleString()}</span>` : ''}
+                </div>
+                <button type="button" class="secondary outline" style="font-size:0.8rem" onclick="deleteCronJob('${j.id}')">Delete</button>
+            </div>
+        `).join('');
+    })
+    .catch(() => {
+        document.getElementById('cron-jobs-list').innerHTML = '<p class="field-desc"><em>Failed to load cron jobs.</em></p>';
+    });
+}
+
+function deleteCronJob(id) {
+    if (!confirm('Delete this cron job?')) return;
+    fetch(`/api/cron/${id}`, { method: 'DELETE' })
+    .then(r => r.json())
+    .then(() => loadCronJobs())
+    .catch(e => alert('Failed to delete: ' + e.message));
+}
+
+loadCronJobs();
 </script>
 {% endblock %}

@@ -9,6 +9,13 @@ set -euo pipefail
 #   ./scripts/deploy.sh -n     # dry-run (rsync --dry-run, no restart)
 ###############################################################################
 
+if [[ -z "${CLAW_DEPLOY_PASSWORD:-}" ]]; then
+    echo "[deploy] ERROR: CLAW_DEPLOY_PASSWORD environment variable is not set."
+    echo "[deploy] Export it before running this script:"
+    echo "[deploy]   export CLAW_DEPLOY_PASSWORD='your-password-here'"
+    exit 1
+fi
+
 REMOTE_USER="amd370"
 REMOTE_HOST="10.7.8.245"
 REMOTE_DIR="~/claw"
@@ -16,7 +23,7 @@ HEALTH_URL="http://${REMOTE_HOST}:8080/api/health"
 HEALTH_TIMEOUT=30
 
 SSH_OPTS="-o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no"
-SSH_CMD="sshpass -p 'lolumadbro1' ssh ${SSH_OPTS} ${REMOTE_USER}@${REMOTE_HOST}"
+SSH_CMD="sshpass -p '${CLAW_DEPLOY_PASSWORD}' ssh ${SSH_OPTS} ${REMOTE_USER}@${REMOTE_HOST}"
 
 # Resolve project root (parent of scripts/)
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -47,7 +54,7 @@ fi
 
 echo "[deploy] Syncing ${PROJECT_ROOT}/ -> ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/"
 
-SSHPASS='lolumadbro1' rsync \
+SSHPASS="${CLAW_DEPLOY_PASSWORD}" rsync \
     -e "sshpass -e ssh ${SSH_OPTS}" \
     "${RSYNC_FLAGS[@]}" \
     "${PROJECT_ROOT}/" \
@@ -63,7 +70,7 @@ fi
 # ── restart claw service ────────────────────────────────────────────────────
 
 echo "[deploy] Restarting claw service on remote..."
-SSHPASS='lolumadbro1' sshpass -e ssh ${SSH_OPTS} \
+SSHPASS="${CLAW_DEPLOY_PASSWORD}" sshpass -e ssh ${SSH_OPTS} \
     "${REMOTE_USER}@${REMOTE_HOST}" \
     "systemctl --user restart claw"
 

@@ -58,10 +58,12 @@ _KEYWORD_ROUTES: list[tuple[re.Pattern, set[str]]] = [
     (re.compile(r"\b(?:my\s+notes|list\s+notes|show\s+notes)\b", re.I), {"list_notes"}),
     (re.compile(r"\b(?:remind|reminder|set\s+(?:a\s+)?reminder)\b", re.I), {"set_reminder"}),
     # Email — route all Gmail tools so the LLM can pick the right one
-    (re.compile(r"\b(?:email|inbox|mail|unread)\b", re.I),
+    (re.compile(r"\b(?:email|inbox|mail|unread|(?:check|read)\s+(?:my\s+)?messages)\b", re.I),
      {"list_emails", "send_email", "reply_email", "search_emails", "read_email", "list_labels", "search_contacts"}),
-    # Contact lookup
+    # Contact / people lookup
     (re.compile(r"\b(?:contact|address\s+(?:for|of)|email\s+(?:for|of|address))\b", re.I),
+     {"search_contacts"}),
+    (re.compile(r"\b(?:people|person|who\s+is|find\s+(?:a\s+)?(?:person|people)|search\s+contacts?)\b", re.I),
      {"search_contacts"}),
     # Gemini web search
     (re.compile(r"\b(?:search\s+the\s+web|google\s+it|look\s+it\s+up\s+online|web\s+search)\b", re.I),
@@ -71,6 +73,22 @@ _KEYWORD_ROUTES: list[tuple[re.Pattern, set[str]]] = [
     # Gemini direct ask
     (re.compile(r"\b(?:ask\s+gemini|have\s+gemini|use\s+gemini)\b", re.I), {"gemini_ask"}),
     (re.compile(r"^gemini[,:]?\s+", re.I), {"gemini_ask"}),
+    # Cron jobs
+    (re.compile(r"\b(?:cron\s+job|recurring|schedule\s+(?:a\s+)?(?:recurring|daily|weekly|hourly))\b", re.I),
+     {"create_cron_job", "list_cron_jobs", "delete_cron_job"}),
+    (re.compile(r"\b(?:list|show|my)\s+cron\b", re.I), {"list_cron_jobs"}),
+    # Inter-agent inbox (use specific phrasing to avoid collision with email "inbox"/"messages")
+    (re.compile(r"\b(?:agent\s+inbox|system\s+inbox|cron\s+(?:results|messages)|check\s+notifications)\b", re.I),
+     {"check_inbox", "send_to_inbox", "clear_inbox"}),
+    # Browser / web browsing
+    (re.compile(r"\b(?:browse|open\s+(?:the\s+)?(?:url|website|page|link)|visit\s+(?:the\s+)?(?:url|website|page))\b", re.I),
+     {"browse_url", "screenshot", "search_web"}),
+    (re.compile(r"\b(?:take\s+(?:a\s+)?screenshot|screenshot\s+(?:of|this))\b", re.I),
+     {"screenshot"}),
+    # Skills
+    (re.compile(r"\b(?:install\s+(?:a\s+)?skill|skill\s+install)\b", re.I),
+     {"skill_install", "skill_uninstall", "skill_list"}),
+    (re.compile(r"\b(?:list|show)\s+skills\b", re.I), {"skill_list"}),
 ]
 
 # Patterns that should NEVER route to tools — skip LLM routing entirely.
