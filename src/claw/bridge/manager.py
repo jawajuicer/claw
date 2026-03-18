@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from claw.admin.sse import StatusBroadcaster
     from claw.agent_core.agent import Agent
     from claw.mcp_handler.registry import MCPRegistry
+    from claw.memory_engine.store import MemoryStore
 
 log = logging.getLogger(__name__)
 
@@ -35,11 +36,13 @@ class BridgeManager:
         registry: MCPRegistry,
         broadcaster: StatusBroadcaster,
         chat_lock: asyncio.Lock,
+        memory_store: MemoryStore | None = None,
     ) -> None:
         self._agent = agent
         self._registry = registry
         self._broadcaster = broadcaster
         self._chat_lock = chat_lock
+        self._memory_store = memory_store
         self._session_store = BridgeSessionStore()
         self._adapters: dict[str, BridgeAdapter] = {}
         self._tasks: dict[str, asyncio.Task] = {}
@@ -67,6 +70,7 @@ class BridgeManager:
             "twilio": ("claw.bridge.adapters.twilio", "TwilioAdapter"),
             "matrix": ("claw.bridge.adapters.matrix", "MatrixAdapter"),
             "irc": ("claw.bridge.adapters.irc", "IRCAdapter"),
+            "signal": ("claw.bridge.adapters.signal", "SignalAdapter"),
         }
 
         for platform, (module_path, class_name) in adapter_map.items():
@@ -78,10 +82,16 @@ class BridgeManager:
                 import importlib
                 module = importlib.import_module(module_path)
                 adapter_cls = getattr(module, class_name)
-                adapter = adapter_cls(
-                    config=platform_cfg.model_dump(),
-                    manager=self,
-                )
+
+                # Signal adapter accepts memory_store for passive group ingestion
+                kwargs: dict = {
+                    "config": platform_cfg.model_dump(),
+                    "manager": self,
+                }
+                if platform == "signal" and self._memory_store is not None:
+                    kwargs["memory_store"] = self._memory_store
+
+                adapter = adapter_cls(**kwargs)
                 self._adapters[platform] = adapter
                 log.info("Loaded bridge adapter: %s", platform)
             except ImportError as e:
@@ -153,8 +163,72 @@ class BridgeManager:
         # Get or create user's session
         user_session = self._session_store.get_or_create(msg.platform, msg.user_id)
 
-        # Get available tools
-        tools = self._registry.get_openai_tools() or None
+        # Get available tools — only for admin users
+        if msg.is_admin:
+            tools = self._registry.get_openai_tools() or None
+        else:
+            tools = None
+            log.info(
+                "[%s] Non-admin user %s (%s) — tools disabled",
+                msg.platform, msg.user_name, msg.user_id,
+            )
+
+        # Build context for the agent: platform info + fresh memory retrieval.
+        # Bridge sessions persist, so session-init memory may be stale.
+        context_parts: list[str] = []
+
+        # Platform context — tells the agent where the message came from
+        if msg.is_direct:
+            context_parts.append(
+                f"[{msg.platform.title()} DM from {msg.user_name}]"
+            )
+        else:
+            context_parts.append(
+                f"[{msg.platform.title()} group chat — {msg.user_name} mentioned you]"
+            )
+
+        # Admin-only context: group members, memory, account info
+        if msg.is_admin:
+            # Group member list — so the agent knows who's in the chat
+            if not msg.is_direct:
+                adapter = self._adapters.get(msg.platform)
+                if adapter and hasattr(adapter, "get_group_members"):
+                    try:
+                        members = await adapter.get_group_members(msg.channel_id)
+                        if members:
+                            names = [m["name"] for m in members]
+                            context_parts.append(
+                                f"[Group members: {', '.join(names)}]"
+                            )
+                    except Exception:
+                        log.debug("Failed to fetch group members", exc_info=True)
+
+            # Fresh memory retrieval (group observations, past conversations, facts)
+            try:
+                memory_ctx = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self._agent.retriever.retrieve_context,
+                        msg.text, 8, 1200,
+                    ),
+                    timeout=5.0,
+                )
+                if memory_ctx:
+                    context_parts.append(memory_ctx)
+            except Exception:
+                log.debug(
+                    "Memory context retrieval failed for bridge message",
+                    exc_info=True,
+                )
+        else:
+            # Non-admin: add a note so the LLM knows not to offer tools
+            context_parts.append(
+                "[This user does not have admin access. "
+                "You can chat and answer general questions, but do NOT "
+                "offer to send emails, access calendars, play music, "
+                "or use any tools on their behalf.]"
+            )
+
+        context = "\n".join(context_parts) if context_parts else None
 
         async with self._chat_lock:
             # Swap in user's session
@@ -162,7 +236,9 @@ class BridgeManager:
             self._agent._session = user_session
 
             try:
-                response = await self._agent.process_utterance(msg.text, tools=tools)
+                response = await self._agent.process_utterance(
+                    msg.text, tools=tools, context=context,
+                )
             except Exception:
                 log.exception("[%s] Agent processing failed for %s", msg.platform, msg.user_id)
                 response = None

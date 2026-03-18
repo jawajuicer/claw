@@ -198,6 +198,7 @@ class Agent:
         text: str,
         tools: list[dict] | None = None,
         model: str | None = None,
+        context: str | None = None,
     ) -> str:
         """Process a user utterance through the agent loop.
 
@@ -205,6 +206,8 @@ class Agent:
             text: The user's transcribed speech or typed input.
             tools: OpenAI-format tool definitions from MCP registry.
             model: Override the default model for this request.
+            context: Additional context to inject before the user message
+                     (e.g., platform info, memory refresh for bridge sessions).
 
         Returns:
             The final assistant response text.
@@ -232,9 +235,10 @@ class Agent:
             self._session = None
             self._pending_escalation = None
 
-        # Start or continue a session
-        if self._session is None:
-            self._session = ConversationSession()
+        # Start or continue a session (also catches uninitialized bridge sessions)
+        if self._session is None or not self._session.messages:
+            if self._session is None:
+                self._session = ConversationSession()
             try:
                 memory_ctx = await asyncio.wait_for(
                     asyncio.to_thread(self.retriever.retrieve_context, text),
@@ -246,7 +250,11 @@ class Agent:
             self._session.initialize(memory_context=memory_ctx)
 
         self._last_interaction = t0
-        self._session.add_user(text)
+        # Inject context (platform info, memory refresh) before user message
+        if context:
+            self._session.add_user(f"{context}\n\n{text}")
+        else:
+            self._session.add_user(text)
         self._session.trim_to_fit()
 
         # Auto-compact if context is getting large
@@ -406,6 +414,15 @@ class Agent:
             else:
                 # Any other utterance clears the stale offer
                 self._pending_escalation = None
+
+        # Handle dismissive/closing remarks with a brief acknowledgment
+        if re.match(
+            r"^\s*(?:nevermind|never\s*mind|forget\s+(?:it|about\s+it)|nvm|"
+            r"that'?s?\s+(?:ok|okay|fine|all|it)|"
+            r"don'?t\s+worry|no\s+worries|all\s+good)\s*[.!?]*\s*$",
+            text_lower,
+        ):
+            return "Okay."
 
         # "ask gemini ..." / "have gemini ..." / "use gemini to ..." / "gemini, ..."
         gemini_match = re.match(
@@ -633,6 +650,7 @@ class Agent:
         text: str,
         tools: list[dict] | None = None,
         model: str | None = None,
+        context: str | None = None,
     ):
         """Async generator yielding streaming events as dicts.
 
@@ -668,8 +686,9 @@ class Agent:
                 self._session = None
                 self._pending_escalation = None
 
-            if self._session is None:
-                self._session = ConversationSession()
+            if self._session is None or not self._session.messages:
+                if self._session is None:
+                    self._session = ConversationSession()
                 try:
                     memory_ctx = await asyncio.wait_for(
                         asyncio.to_thread(self.retriever.retrieve_context, text),
@@ -681,7 +700,10 @@ class Agent:
                 self._session.initialize(memory_context=memory_ctx)
 
             self._last_interaction = t0
-            self._session.add_user(text)
+            if context:
+                self._session.add_user(f"{context}\n\n{text}")
+            else:
+                self._session.add_user(text)
             self._session.trim_to_fit()
 
             # Auto-compact if context is getting large

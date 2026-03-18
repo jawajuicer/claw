@@ -36,6 +36,7 @@ class InboundMessage:
     text: str
     is_direct: bool = True  # True for DMs, False for group messages
     is_mention: bool = False  # True if bot was @mentioned in group
+    is_admin: bool = True  # True if user can execute tools (default: all users)
     reply_context: dict = field(default_factory=dict)  # platform-specific reply data
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 

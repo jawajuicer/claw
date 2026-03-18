@@ -199,6 +199,7 @@ class Claw:
                 registry=self.registry,
                 broadcaster=self.broadcaster,
                 chat_lock=self.admin_app.state.chat_lock,
+                memory_store=self.store,
             )
             self.admin_app.state.bridge_manager = self.bridge_manager
         except Exception:

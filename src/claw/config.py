@@ -132,9 +132,12 @@ class LLMConfig(BaseModel):
         return "off"
 
     system_prompt: str = (
-        "You are The Claw, a helpful voice assistant. You are running locally "
-        "on the user's machine. You have access to tools via MCP servers. "
-        "Be concise in your responses since they will be spoken aloud."
+        "You are The Claw, a helpful AI assistant running locally on the user's machine. "
+        "You have access to tools via MCP servers. You interact through voice and messaging (Signal). "
+        "You have memory of past conversations, group chats, and user facts. "
+        "Be CONCISE. Short answers. No fluff. Never ask 'anything else?' or 'can I help with something else?' "
+        "ACT FIRST, ask questions only when truly ambiguous. When told 'nevermind' or 'forget it', "
+        "just acknowledge briefly. DO NOT OVERTHINK. DO NOT over-explain."
     )
 
 
@@ -339,6 +342,18 @@ class IRCBridgeConfig(BaseModel):
     allowed_users: list[str] = Field(default_factory=list)
 
 
+class SignalBridgeConfig(BaseModel):
+    enabled: bool = False
+    api_url: str = "http://localhost:8080"  # signal-cli-rest-api endpoint
+    phone_number: str = ""  # registered Signal phone number (E.164 format)
+    bot_name: str = "Claw"  # name to match for mentions in groups
+    allowed_groups: list[str] = Field(default_factory=list)  # group IDs (empty = all)
+    allowed_users: list[str] = Field(default_factory=list)  # phone numbers for DMs (empty = all)
+    admin_users: list[str] = Field(default_factory=list)  # UUIDs or phone numbers that can execute tools (empty = all)
+    observe_groups: bool = True  # passively ingest non-mention group messages into memory
+    poll_interval: float = 1.0  # seconds between receive polls
+
+
 class BridgesConfig(BaseModel):
     telegram: TelegramBridgeConfig = Field(default_factory=TelegramBridgeConfig)
     discord: DiscordBridgeConfig = Field(default_factory=DiscordBridgeConfig)
@@ -346,6 +361,7 @@ class BridgesConfig(BaseModel):
     twilio: TwilioBridgeConfig = Field(default_factory=TwilioBridgeConfig)
     matrix: MatrixBridgeConfig = Field(default_factory=MatrixBridgeConfig)
     irc: IRCBridgeConfig = Field(default_factory=IRCBridgeConfig)
+    signal: SignalBridgeConfig = Field(default_factory=SignalBridgeConfig)
 
 
 class BrowserConfig(BaseModel):

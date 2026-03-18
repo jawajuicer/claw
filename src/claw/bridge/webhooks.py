@@ -67,6 +67,31 @@ async def telegram_webhook(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+@bridge_webhook_router.post("/signal/webhook")
+async def signal_webhook(request: Request) -> JSONResponse:
+    """Handle incoming signal-cli-rest-api webhook callbacks.
+
+    signal-cli-rest-api can be configured to POST incoming messages
+    to a callback URL instead of (or in addition to) the receive endpoint.
+    No signature validation is needed since the container is local.
+    """
+    manager = getattr(request.app.state, "bridge_manager", None)
+    if not manager:
+        return JSONResponse({"error": "Bridge not configured"}, status_code=503)
+
+    adapter = manager.adapters.get("signal")
+    if not adapter:
+        return JSONResponse({"error": "Signal adapter not enabled"}, status_code=503)
+
+    try:
+        body = await request.json()
+        await adapter.handle_webhook(body)
+    except Exception:
+        log.exception("Signal webhook processing failed")
+
+    return JSONResponse({"ok": True})
+
+
 async def _validate_twilio_signature(request: Request, form: dict) -> bool:
     """Validate Twilio request signature using auth token."""
     from claw.config import get_settings

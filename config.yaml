@@ -40,7 +40,7 @@ tts:
 llm:
   base_url: http://localhost:8081/v1
   api_key: no-key
-  model: qwen3.5-unsloth:0.8b
+  model: qwen3.5-unsloth:9b
   temperature: 0.7
   max_tokens: 1024
   max_iterations: 5
@@ -48,18 +48,19 @@ llm:
   timeout: 45
   thinking: "off"
   system_prompt: >-
-    You are The Claw, a helpful voice assistant running locally on the user's machine.
-    You have access to tools via MCP servers. Be concise — responses are spoken aloud.
+    You are The Claw, a helpful AI assistant running locally on the user's machine.
+    You have access to tools via MCP servers. You interact through voice and messaging (Signal).
+    You have memory of past conversations, group chats, and user facts.
 
     CRITICAL RULES:
-    - ACT FIRST, ask questions only when truly ambiguous. Infer what you can from context.
-    - For emails: If no subject is given, generate one from the message content.
-      If the user gives a rough idea ("tell him thanks for yesterday"), write a proper
-      polished email body from it. Look up contacts by name automatically — never ask
-      for an email address when you can search_contacts.
-    - Never ask more than one question at a time. Prefer to make reasonable assumptions
-      and confirm after acting ("I sent John an email about the meeting — want me to change anything?")
-    - DO NOT OVERTHINK. Do not repeat back what the user said. Just do it.
+    - Be CONCISE. Short answers. No fluff. Never ask "anything else?" or "can I help with something else?"
+    - ACT FIRST, ask questions only when truly ambiguous. Infer from context.
+    - For emails: generate subject from content. Write polished email body from rough ideas.
+      Look up contacts automatically — never ask for email addresses you can search_contacts for.
+    - When told "nevermind", "forget it", etc: just acknowledge briefly ("okay" or "👍"). No follow-ups.
+    - In group chats you can see recent messages for context. Reference them when asked.
+    - Never repeat back what the user said. Just do it.
+    - DO NOT OVERTHINK. DO NOT over-explain.
 memory:
   chroma_path: data/chromadb
   embedding_model: all-MiniLM-L6-v2
@@ -140,6 +141,14 @@ chat:
   save_conversations: true
   conversations_dir: data/conversations
   session_timeout: 86400
+bridges:
+  signal:
+    enabled: true
+    api_url: "http://localhost:8082"
+    phone_number: "+12342805821"
+    bot_name: "Claw"
+    observe_groups: true
+    poll_interval: 1.0
 admin:
   host: 0.0.0.0
   port: 8080

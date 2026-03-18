@@ -416,14 +416,17 @@ class MusicPlayer:
 
     # ── Playback controls ───────────────────────────────────────
 
-    def _play_track(self, track: dict, source: str = "user_request"):
-        """Internal: stream a track via mpv. Called from play() or auto-advance."""
+    def _play_track(self, track: dict, source: str = "user_request") -> bool:
+        """Internal: stream a track via mpv. Called from play() or auto-advance.
+
+        Returns True on success, False on failure.
+        """
         video_id = track["video_id"]
         try:
             stream_url = self._get_stream_url(video_id)
         except RuntimeError as e:
             log.error("Failed to get stream URL for %s: %s", video_id, e)
-            return
+            return False
 
         self._ensure_mpv()
         with self._lock:
@@ -437,10 +440,12 @@ class MusicPlayer:
         try:
             self._has_played = True
             self._mpv_command("loadfile", stream_url)
+            return True
         except Exception:
             log.exception("mpv failed to play stream URL")
             with self._lock:
                 self._current = None
+            return False
 
     def _generate_radio_queue(self, video_id: str, generation: int):
         """Use ytmusicapi watch playlist to fill the queue with similar tracks."""
@@ -485,7 +490,8 @@ class MusicPlayer:
             self._generation += 1
             gen = self._generation
         track = {"video_id": video_id, "title": title, "artist": artist, "album": "", "duration": ""}
-        self._play_track(track, source="user_request")
+        if not self._play_track(track, source="user_request"):
+            return f"Failed to play '{title}' by {artist} — could not get stream URL"
         threading.Thread(
             target=self._generate_radio_queue, args=(video_id, gen), daemon=True
         ).start()
