@@ -42,7 +42,7 @@ def _build_account_context() -> str:
     if len(accounts) > 1:
         lines.append("When ambiguous and multiple accounts have the same service, ASK which account.")
     lines.append("When only one account has the needed service, use it automatically.")
-    lines.append("Always ask for any missing required information (date, time, etc.) before acting.")
+    lines.append("Infer missing details from context. Only ask if truly ambiguous (e.g., date for a calendar event with no hint).")
     return "\n".join(lines)
 
 

@@ -226,18 +226,30 @@ def read_email(email_id: str, account: str = "") -> str:
 
 
 @mcp.tool()
-def send_email(to: str, subject: str, body: str, account: str = "") -> str:
+def send_email(to: str, body: str, subject: str = "", account: str = "") -> str:
     """Send an email. IMPORTANT: If you only have a person's name and not their email address, you MUST call search_contacts first to find the correct email. Never guess or make up email addresses.
+
+    If the user gives a rough idea for the message, write a polished email body from it.
+    If no subject is provided, generate a short relevant subject from the body content.
 
     Args:
         to: Recipient email address. Must be a real address — use search_contacts to look it up if needed.
-        subject: Email subject line.
-        body: Email body text.
+        body: Email body text. Write a complete, well-written message even if the user only gave a rough idea.
+        subject: Email subject line. If empty, a subject will be auto-generated from the body.
         account: Google account label (e.g., "personal", "work"). Leave empty to auto-select.
     """
     service, _, err = _resolve(account)
     if err:
         return err
+
+    # Auto-generate subject from body if not provided
+    if not subject:
+        # Take first meaningful sentence or first N words
+        first_line = body.split("\n")[0].strip().rstrip(".")
+        if len(first_line) > 60:
+            subject = first_line[:57] + "..."
+        else:
+            subject = first_line or "Message"
 
     try:
         message = MIMEText(body)

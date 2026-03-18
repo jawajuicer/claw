@@ -3,7 +3,7 @@ audio:
   sample_rate: 16000
   channels: 1
   block_size: 1280
-  silence_duration: 2.0
+  silence_duration: 1.2
   agc_silence_threshold: 0.05
   agc_gain_ceiling: 3.5
   max_record_seconds: 30
@@ -47,11 +47,19 @@ llm:
   context_window: 32768
   timeout: 45
   thinking: "off"
-  system_prompt: 'You are The Claw, a helpful voice assistant. You are running locally
+  system_prompt: >-
+    You are The Claw, a helpful voice assistant running locally on the user's machine.
+    You have access to tools via MCP servers. Be concise — responses are spoken aloud.
 
-    on the user''s machine. You have access to tools via MCP servers.
-
-    Be concise in your responses since they will be spoken aloud. DO NOT OVERTHINK.'
+    CRITICAL RULES:
+    - ACT FIRST, ask questions only when truly ambiguous. Infer what you can from context.
+    - For emails: If no subject is given, generate one from the message content.
+      If the user gives a rough idea ("tell him thanks for yesterday"), write a proper
+      polished email body from it. Look up contacts by name automatically — never ask
+      for an email address when you can search_contacts.
+    - Never ask more than one question at a time. Prefer to make reasonable assumptions
+      and confirm after acting ("I sent John an email about the meeting — want me to change anything?")
+    - DO NOT OVERTHINK. Do not repeat back what the user said. Just do it.
 memory:
   chroma_path: data/chromadb
   embedding_model: all-MiniLM-L6-v2
