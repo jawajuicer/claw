@@ -1167,12 +1167,8 @@ async def auth_google_start(request: Request, label: str = ""):
         )
 
     settings = get_settings()
-    # Allow re-auth if account exists but token is missing or invalid
-    if label in settings.google_auth.accounts:
-        acct = settings.google_auth.accounts[label]
-        token_file = acct.token_file if hasattr(acct, "token_file") else acct.get("token_file", "")
-        if _token_is_valid(token_file):
-            return RedirectResponse(f"/settings?error=Account+'{label}'+already+linked.", status_code=302)
+    # Allow re-auth if account exists — always permit re-linking to pick up new scopes
+    # (Previously this blocked re-auth if token existed, which prevented scope upgrades)
 
     # Check credentials.json exists
     creds_path = PROJECT_ROOT / settings.google_auth.credentials_file

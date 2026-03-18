@@ -395,7 +395,8 @@ def search_contacts(name: str, account: str = "") -> str:
 
     people_svc = _get_people_service(label)
     if people_svc is None:
-        return "Contacts not available. Google account may need re-linking."
+        return ("Contacts not available — the Google account token is missing contacts scopes. "
+                "Re-link the account in Settings > Google Accounts to fix this.")
 
     results = []
 

@@ -22,6 +22,11 @@ def _resolve_path(rel: str) -> Path:
 def get_credentials(credentials_file: str, token_file: str, scopes: list[str]):
     """Load or refresh Google OAuth credentials.
 
+    Handles scope mismatch gracefully: if the token was issued with fewer
+    scopes than the config requests, we load with the token's actual scopes
+    so refresh succeeds. Missing-scope features degrade gracefully rather
+    than breaking everything.
+
     Returns a google.oauth2.credentials.Credentials object, or None if not authenticated.
     """
     from google.auth.transport.requests import Request
@@ -30,8 +35,30 @@ def get_credentials(credentials_file: str, token_file: str, scopes: list[str]):
     token_path = _resolve_path(token_file)
     creds = None
 
-    if token_path.exists():
-        creds = Credentials.from_authorized_user_file(str(token_path), scopes)
+    if not token_path.exists():
+        return None
+
+    # Read the token's actual scopes to detect mismatch
+    try:
+        token_data = json.loads(token_path.read_text())
+        token_scopes = set(token_data.get("scopes", []))
+    except (json.JSONDecodeError, OSError):
+        token_scopes = set()
+
+    requested_scopes = set(scopes)
+    missing_scopes = requested_scopes - token_scopes
+
+    # Load credentials with the token's actual scopes (not config scopes)
+    # so that refresh works even if config has added new scopes since auth.
+    effective_scopes = list(token_scopes) if token_scopes else scopes
+    creds = Credentials.from_authorized_user_file(str(token_path), effective_scopes)
+
+    if missing_scopes and token_scopes:
+        log.warning(
+            "Google token is missing scopes: %s — some features (e.g., contacts) "
+            "may not work. Re-link the account in Settings to fix.",
+            ", ".join(sorted(missing_scopes)),
+        )
 
     if creds and creds.expired and creds.refresh_token:
         try:
