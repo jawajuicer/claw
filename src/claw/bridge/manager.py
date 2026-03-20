@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from claw.bridge.base import BridgeAdapter, InboundMessage
 from claw.bridge.formatter import format_response
+from claw.bridge.profiles import resolve_profile
 from claw.bridge.session_store import BridgeSessionStore
 from claw.config import get_settings
 
@@ -27,7 +28,7 @@ class BridgeManager:
     Lifecycle: initialized in Claw.initialize(), run() added as asyncio task,
     stop() called during shutdown. Same pattern as Scheduler.
 
-    Session isolation: each (platform, user_id) gets its own ConversationSession.
+    Session isolation: DMs get per-user sessions, groups get shared sessions.
     The manager swaps sessions under chat_lock before calling agent.process_utterance().
     """
 
@@ -154,19 +155,43 @@ class BridgeManager:
         """Route an inbound message through the agent and return the response.
 
         Uses session swapping under chat_lock for conversation isolation.
-        Each (platform, user_id) gets their own ConversationSession.
+        DMs get per-user sessions, groups get shared sessions.
         """
         log.info(
             "[%s] Message from %s (%s): %s",
             msg.platform, msg.user_name, msg.user_id, msg.text[:100],
         )
 
-        # Get or create user's session
-        user_session = self._session_store.get_or_create(msg.platform, msg.user_id)
+        # Resolve channel profile for memory scoping and behavior customization
+        profile = resolve_profile(msg.platform, msg.channel_id)
+        memory_scope = profile.memory_scope if profile.memory_scope != "shared" else None
 
-        # Get available tools — only for admin users
-        if msg.is_admin:
+        # Determine session key: group vs DM
+        adapter = self._adapters.get(msg.platform)
+        use_group_session = (
+            not msg.is_direct
+            and adapter is not None
+            and adapter._config.get("group_sessions", True)
+        )
+        session_key = BridgeSessionStore.make_key(
+            msg.platform, msg.user_id, msg.channel_id,
+            is_direct=not use_group_session if not msg.is_direct else True,
+        )
+
+        # Get or create session
+        user_session = self._session_store.get_or_create(session_key)
+        log.info(
+            "[%s] Session %s: %d messages (sessions_active=%d)",
+            msg.platform, session_key,
+            len(user_session.messages), self._session_store.count,
+        )
+
+        # Get available tools — only for admin users, respecting profile
+        if msg.is_admin and profile.tools_enabled:
             tools = self._registry.get_openai_tools() or None
+        elif msg.is_admin and not profile.tools_enabled:
+            tools = None
+            log.info("[%s] Tools disabled by channel profile", msg.platform)
         else:
             tools = None
             log.info(
@@ -185,20 +210,33 @@ class BridgeManager:
                 f"[{msg.platform.title()} DM from {msg.user_name}]"
             )
         else:
+            # Enhanced group context with sender attribution guidance
             context_parts.append(
-                f"[{msg.platform.title()} group chat — {msg.user_name} mentioned you]"
+                f"[{msg.platform.title()} group chat — responding to {msg.user_name}.\n"
+                f" This is a shared group conversation. Messages from different users\n"
+                f" appear with [Name]: prefix. Address users by name.]"
             )
+
+        # Append profile system prompt addon if set
+        if profile.system_prompt_addon:
+            context_parts.append(profile.system_prompt_addon)
 
         # Admin-only context: group members + memory retrieval in parallel
         if msg.is_admin:
+            # Only fetch memory for new sessions — ongoing conversations
+            # already have full context in message history.  Injecting stale
+            # ChromaDB results on every turn confuses small models by mixing
+            # unrelated past events/emails into the current conversation.
+            is_new_session = not user_session.messages
+
             async def _fetch_group_members() -> str | None:
                 if msg.is_direct:
                     return None
-                adapter = self._adapters.get(msg.platform)
-                if not adapter or not hasattr(adapter, "get_group_members"):
+                adpt = self._adapters.get(msg.platform)
+                if not adpt or not hasattr(adpt, "get_group_members"):
                     return None
                 try:
-                    members = await adapter.get_group_members(msg.channel_id)
+                    members = await adpt.get_group_members(msg.channel_id)
                     if members:
                         names = [m["name"] for m in members]
                         return f"[Group members: {', '.join(names)}]"
@@ -211,7 +249,7 @@ class BridgeManager:
                     return await asyncio.wait_for(
                         asyncio.to_thread(
                             self._agent.retriever.retrieve_context,
-                            msg.text, 8, 1200,
+                            msg.text, 8, 1200, memory_scope,
                         ),
                         timeout=3.0,
                     )
@@ -222,14 +260,18 @@ class BridgeManager:
                     )
                 return None
 
-            # Run both in parallel
+            # Run context assembly — memory only on first message in session
             t_ctx = time.monotonic()
-            group_ctx, memory_ctx = await asyncio.gather(
-                _fetch_group_members(), _fetch_memory(),
-            )
+            if is_new_session:
+                group_ctx, memory_ctx = await asyncio.gather(
+                    _fetch_group_members(), _fetch_memory(),
+                )
+            else:
+                group_ctx = await _fetch_group_members()
+                memory_ctx = None
             log.info(
-                "[%s] Context assembly: %.1fms (group + memory parallel)",
-                msg.platform, (time.monotonic() - t_ctx) * 1000,
+                "[%s] Context assembly: %.1fms (new_session=%s)",
+                msg.platform, (time.monotonic() - t_ctx) * 1000, is_new_session,
             )
             if group_ctx:
                 context_parts.append(group_ctx)
@@ -246,6 +288,12 @@ class BridgeManager:
 
         context = "\n".join(context_parts) if context_parts else None
 
+        # Sender attribution for group messages
+        if not msg.is_direct:
+            agent_text = f"[{msg.user_name}]: {msg.text}"
+        else:
+            agent_text = msg.text
+
         async with self._chat_lock:
             # Swap in user's session
             original_session = self._agent._session
@@ -254,8 +302,9 @@ class BridgeManager:
             try:
                 t_agent = time.monotonic()
                 response = await self._agent.process_utterance(
-                    msg.text, tools=tools, context=context,
+                    agent_text, tools=tools, context=context,
                     _skip_session_memory=True,
+                    memory_scope=memory_scope,
                 )
                 log.info(
                     "[%s] Agent processing: %.1fms",
@@ -267,7 +316,7 @@ class BridgeManager:
             finally:
                 # Save updated session and restore original
                 self._session_store.update(
-                    msg.platform, msg.user_id, self._agent._session
+                    session_key, self._agent._session
                 )
                 self._agent._session = original_session
 

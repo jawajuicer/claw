@@ -63,20 +63,28 @@ class MemoryStore:
         if self.conversations is None:
             raise RuntimeError("MemoryStore not initialized — call initialize() first")
 
-    def add_conversation(self, conversation_id: str, text: str, metadata: dict | None = None) -> None:
+    def add_conversation(
+        self, conversation_id: str, text: str, metadata: dict | None = None, scope: str | None = None,
+    ) -> None:
         """Store a conversation turn."""
         self._require_init()
         meta = metadata or {}
+        if scope is not None:
+            meta["scope"] = scope
         self.conversations.add(
             ids=[conversation_id],
             documents=[text],
             metadatas=[meta],
         )
 
-    def add_fact(self, fact_id: str, text: str, metadata: dict | None = None) -> None:
+    def add_fact(
+        self, fact_id: str, text: str, metadata: dict | None = None, scope: str | None = None,
+    ) -> None:
         """Store an extracted fact."""
         self._require_init()
         meta = metadata or {}
+        if scope is not None:
+            meta["scope"] = scope
         self.facts.add(
             ids=[fact_id],
             documents=[text],
@@ -93,18 +101,41 @@ class MemoryStore:
             metadatas=[meta],
         )
 
-    def query_conversations(self, query: str, n_results: int | None = None) -> list[dict]:
+    def _scope_where(self, scope: str | None) -> dict | None:
+        """Build a ChromaDB where clause for scope filtering.
+
+        When scope is provided, returns documents matching that scope OR
+        the "shared" scope (universal facts accessible everywhere).
+        When scope is None, returns None (no filtering — backward compatible).
+        """
+        if scope is None:
+            return None
+        return {"$or": [{"scope": scope}, {"scope": "shared"}]}
+
+    def query_conversations(
+        self, query: str, n_results: int | None = None, scope: str | None = None,
+    ) -> list[dict]:
         """Search conversations by semantic similarity."""
         self._require_init()
         n = n_results or get_settings().memory.max_results
-        results = self.conversations.query(query_texts=[query], n_results=n)
+        where = self._scope_where(scope)
+        kwargs: dict = {"query_texts": [query], "n_results": n}
+        if where is not None:
+            kwargs["where"] = where
+        results = self.conversations.query(**kwargs)
         return self._unpack_results(results)
 
-    def query_facts(self, query: str, n_results: int | None = None) -> list[dict]:
+    def query_facts(
+        self, query: str, n_results: int | None = None, scope: str | None = None,
+    ) -> list[dict]:
         """Search facts by semantic similarity."""
         self._require_init()
         n = n_results or get_settings().memory.max_results
-        results = self.facts.query(query_texts=[query], n_results=n)
+        where = self._scope_where(scope)
+        kwargs: dict = {"query_texts": [query], "n_results": n}
+        if where is not None:
+            kwargs["where"] = where
+        results = self.facts.query(**kwargs)
         return self._unpack_results(results)
 
     def query_categories(self, query: str, n_results: int | None = None) -> list[dict]:

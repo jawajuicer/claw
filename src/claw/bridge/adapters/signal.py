@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from claw.bridge.base import BridgeAdapter, InboundMessage, PlatformLimits
+from claw.bridge.profiles import resolve_profile
 
 if TYPE_CHECKING:
     from claw.bridge.manager import BridgeManager
@@ -238,6 +239,10 @@ class SignalAdapter(BridgeAdapter):
             return
 
         try:
+            # Resolve profile to determine memory scope for this group
+            profile = resolve_profile("signal", group_id)
+            scope = profile.memory_scope if profile.memory_scope != "shared" else None
+
             prefix = "[mention] " if is_mention else ""
             doc = f'[Signal group "{group_name}"] {prefix}{sender_name}: {text}'
             obs_id = f"signal_obs_{uuid.uuid4().hex[:16]}"
@@ -254,7 +259,7 @@ class SignalAdapter(BridgeAdapter):
             if msg_timestamp is not None:
                 metadata["signal_timestamp"] = str(msg_timestamp)
             await asyncio.to_thread(
-                self._memory_store.add_conversation, obs_id, doc, metadata,
+                self._memory_store.add_conversation, obs_id, doc, metadata, scope,
             )
         except Exception:
             log.exception("[signal] Failed to store group observation")
@@ -276,6 +281,9 @@ class SignalAdapter(BridgeAdapter):
             return
 
         try:
+            profile = resolve_profile("signal", group_id or "")
+            scope = profile.memory_scope if profile.memory_scope != "shared" else None
+
             context = f'group "{group_name}"' if group_name else "DM"
             doc = (
                 f"[Signal {context}] [DELETED] {sender_name} deleted their message "
@@ -294,7 +302,7 @@ class SignalAdapter(BridgeAdapter):
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
             await asyncio.to_thread(
-                self._memory_store.add_conversation, obs_id, doc, metadata,
+                self._memory_store.add_conversation, obs_id, doc, metadata, scope,
             )
             log.info("[signal] Stored delete notice for message ts=%d from %s", target_timestamp, sender_name)
         except Exception:
@@ -318,6 +326,9 @@ class SignalAdapter(BridgeAdapter):
             return
 
         try:
+            profile = resolve_profile("signal", group_id or "")
+            scope = profile.memory_scope if profile.memory_scope != "shared" else None
+
             context = f'group "{group_name}"' if group_name else "DM"
             doc = (
                 f'[Signal {context}] [EDITED] {sender_name} edited their message '
@@ -336,7 +347,7 @@ class SignalAdapter(BridgeAdapter):
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
             await asyncio.to_thread(
-                self._memory_store.add_conversation, obs_id, doc, metadata,
+                self._memory_store.add_conversation, obs_id, doc, metadata, scope,
             )
             log.info("[signal] Stored edit notice for message ts=%d from %s", original_timestamp, sender_name)
         except Exception:

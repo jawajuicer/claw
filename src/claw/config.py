@@ -282,6 +282,21 @@ class SchedulerConfig(BaseModel):
     cron_storage: str = "data/scheduler/cron_jobs.json"
 
 
+# ── Channel profiles ───────────────────────────────────────────────────────
+
+class ChannelProfile(BaseModel):
+    memory_scope: str = "shared"
+    system_prompt_addon: str = ""
+    tools_enabled: bool = True
+
+
+class ChannelProfilesConfig(BaseModel):
+    profiles: dict[str, ChannelProfile] = Field(
+        default_factory=lambda: {"default": ChannelProfile()}
+    )
+    default_profile: str = "default"
+
+
 # ── Bridge configs ─────────────────────────────────────────────────────────
 
 class TelegramBridgeConfig(BaseModel):
@@ -304,6 +319,9 @@ class DiscordBridgeConfig(BaseModel):
     token_secret: str = "discord_bot_token"
     allowed_channels: list[str] = Field(default_factory=list)
     allowed_users: list[str] = Field(default_factory=list)
+    profile: str = ""
+    channel_profiles: dict[str, str] = Field(default_factory=dict)
+    group_sessions: bool = True
 
 
 class SlackBridgeConfig(BaseModel):
@@ -352,6 +370,9 @@ class SignalBridgeConfig(BaseModel):
     admin_users: list[str] = Field(default_factory=list)  # UUIDs or phone numbers that can execute tools (empty = all)
     observe_groups: bool = True  # passively ingest non-mention group messages into memory
     poll_interval: float = 1.0  # seconds between receive polls
+    profile: str = ""
+    channel_profiles: dict[str, str] = Field(default_factory=dict)
+    group_sessions: bool = True
 
 
 class BridgesConfig(BaseModel):
@@ -541,6 +562,7 @@ class Settings(BaseSettings):
     admin: AdminConfig = Field(default_factory=AdminConfig)
     bridges: BridgesConfig = Field(default_factory=BridgesConfig)
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
+    channel_profiles: ChannelProfilesConfig = Field(default_factory=ChannelProfilesConfig)
 
     @classmethod
     def settings_customise_sources(

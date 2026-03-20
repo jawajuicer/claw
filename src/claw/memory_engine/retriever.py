@@ -17,11 +17,18 @@ class MemoryRetriever:
     def __init__(self, store: MemoryStore) -> None:
         self.store = store
 
-    def retrieve_context(self, query: str, max_results: int | None = None, max_chars: int = 600) -> str:
+    def retrieve_context(
+        self, query: str, max_results: int | None = None, max_chars: int = 600,
+        scope: str | None = None,
+    ) -> str:
         """Retrieve relevant context from all memory collections.
 
         Returns a formatted string suitable for injection into the LLM system prompt.
         Capped at *max_chars* to keep prompt tokens manageable on CPU inference.
+
+        Args:
+            scope: When provided, only returns memories matching this scope plus
+                   "shared" memories. None = no filtering (backward compatible).
         """
         from claw.config import get_settings
 
@@ -31,13 +38,13 @@ class MemoryRetriever:
         sections: list[str] = []
 
         # Search facts first (highest value)
-        facts = self.store.query_facts(query, n_results=max_results)
+        facts = self.store.query_facts(query, n_results=max_results, scope=scope)
         if facts:
             lines = [f"- {f['document']}" for f in facts]
             sections.append("Known facts:\n" + "\n".join(lines))
 
         # Search past conversations
-        convos = self.store.query_conversations(query, n_results=max_results)
+        convos = self.store.query_conversations(query, n_results=max_results, scope=scope)
         if convos:
             lines = [f"- {c['document']}" for c in convos]
             sections.append("Relevant past conversations:\n" + "\n".join(lines))
@@ -50,7 +57,9 @@ class MemoryRetriever:
             context = context[:max_chars].rsplit("\n", 1)[0] + "\n--- End Memory ---"
         return context
 
-    def store_conversation_turn(self, role: str, content: str, session_id: str) -> None:
+    def store_conversation_turn(
+        self, role: str, content: str, session_id: str, scope: str | None = None,
+    ) -> None:
         """Store a single conversation turn in memory."""
         turn_id = f"turn-{uuid.uuid4().hex[:12]}"
         self.store.add_conversation(
@@ -61,9 +70,12 @@ class MemoryRetriever:
                 "session_id": session_id,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             },
+            scope=scope,
         )
 
-    async def extract_and_store_facts(self, conversation: str, llm_client) -> list[str]:
+    async def extract_and_store_facts(
+        self, conversation: str, llm_client, scope: str | None = None,
+    ) -> list[str]:
         """Use the LLM to extract factual information from a conversation.
 
         This runs post-conversation to build long-term memory.
@@ -94,6 +106,7 @@ class MemoryRetriever:
                 fact_id=fact_id,
                 text=fact_text,
                 metadata={"extracted_at": now},
+                scope=scope,
             )
             log.info("Stored fact: %s", fact_text)
 

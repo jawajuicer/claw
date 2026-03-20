@@ -149,6 +149,9 @@ bridges:
     bot_name: "Claw"
     observe_groups: true
     poll_interval: 1.0
+  discord:
+    enabled: true
+    token_secret: "discord_bot_token"
 admin:
   host: 0.0.0.0
   port: 8080

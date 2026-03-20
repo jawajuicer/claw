@@ -190,6 +190,7 @@ class Agent:
         self.last_usage: UsageStats | None = None
         self._model_override: str | None = None
         self._pending_escalation: str | None = None
+        self._memory_scope: str | None = None
 
     @property
     def session(self) -> ConversationSession | None:
@@ -202,6 +203,7 @@ class Agent:
         model: str | None = None,
         context: str | None = None,
         _skip_session_memory: bool = False,
+        memory_scope: str | None = None,
     ) -> str:
         """Process a user utterance through the agent loop.
 
@@ -213,6 +215,8 @@ class Agent:
                      (e.g., platform info, memory refresh for bridge sessions).
             _skip_session_memory: If True, skip memory retrieval during session
                      init (caller already injected memory via context).
+            memory_scope: Memory scope for reads/writes (e.g. "personal", "work").
+                     None = no filtering (backward compatible for voice/CLI).
 
         Returns:
             The final assistant response text.
@@ -240,6 +244,9 @@ class Agent:
             self._session = None
             self._pending_escalation = None
 
+        # Store memory scope for use by extract_facts()
+        self._memory_scope = memory_scope
+
         # Start or continue a session (also catches uninitialized bridge sessions)
         if self._session is None or not self._session.messages:
             if self._session is None:
@@ -249,7 +256,10 @@ class Agent:
             else:
                 try:
                     memory_ctx = await asyncio.wait_for(
-                        asyncio.to_thread(self.retriever.retrieve_context, text),
+                        asyncio.to_thread(
+                            self.retriever.retrieve_context, text,
+                            None, 600, memory_scope,
+                        ),
                         timeout=3.0,
                     )
                 except asyncio.TimeoutError:
@@ -276,13 +286,13 @@ class Agent:
                 log.exception("Auto-compact failed, falling back to trim")
 
         # Store user turn in memory
-        self.retriever.store_conversation_turn("user", text, self._session.session_id)
+        self.retriever.store_conversation_turn("user", text, self._session.session_id, scope=memory_scope)
 
         # Fast path: directly dispatch simple tool commands without LLM
         direct = await self._try_direct_dispatch(text)
         if direct is not None:
             self._session.add_assistant(direct)
-            self.retriever.store_conversation_turn("assistant", direct, self._session.session_id)
+            self.retriever.store_conversation_turn("assistant", direct, self._session.session_id, scope=memory_scope)
             stats.elapsed_s = time.monotonic() - t0
             self.last_usage = stats
             log.info("Direct dispatch: %s", direct[:100])
@@ -340,7 +350,7 @@ class Agent:
                 content = message.content or ""
                 content = await self._maybe_escalate(text, content, stats, t0)
                 self._session.add_assistant(content)
-                self.retriever.store_conversation_turn("assistant", content, self._session.session_id)
+                self.retriever.store_conversation_turn("assistant", content, self._session.session_id, scope=memory_scope)
                 stats.elapsed_s = time.monotonic() - t0
                 self.last_usage = stats
                 await self._record_usage(stats)
@@ -387,7 +397,7 @@ class Agent:
         stats.provider = self.llm.last_serving_provider
         content = response.choices[0].message.content or "I wasn't able to complete that request."
         self._session.add_assistant(content)
-        self.retriever.store_conversation_turn("assistant", content, self._session.session_id)
+        self.retriever.store_conversation_turn("assistant", content, self._session.session_id, scope=memory_scope)
         stats.elapsed_s = time.monotonic() - t0
         self.last_usage = stats
         await self._record_usage(stats)
@@ -731,7 +741,8 @@ class Agent:
                     log.exception("Auto-compact failed (stream), falling back to trim")
 
             self.retriever.store_conversation_turn(
-                "user", text, self._session.session_id
+                "user", text, self._session.session_id,
+                scope=self._memory_scope,
             )
 
             # ── Direct dispatch (fast path) ────────────────────────────
@@ -739,7 +750,8 @@ class Agent:
             if direct is not None:
                 self._session.add_assistant(direct)
                 self.retriever.store_conversation_turn(
-                    "assistant", direct, self._session.session_id
+                    "assistant", direct, self._session.session_id,
+                    scope=self._memory_scope,
                 )
                 stats.elapsed_s = time.monotonic() - t0
                 self.last_usage = stats
@@ -848,7 +860,8 @@ class Agent:
                     )
                     self._session.add_assistant(full_content)
                     self.retriever.store_conversation_turn(
-                        "assistant", full_content, self._session.session_id
+                        "assistant", full_content, self._session.session_id,
+                        scope=self._memory_scope,
                     )
                     stats.elapsed_s = time.monotonic() - t0
                     self.last_usage = stats
@@ -949,7 +962,8 @@ class Agent:
             )
             self._session.add_assistant(content)
             self.retriever.store_conversation_turn(
-                "assistant", content, self._session.session_id
+                "assistant", content, self._session.session_id,
+                scope=self._memory_scope,
             )
             stats.elapsed_s = time.monotonic() - t0
             self.last_usage = stats
@@ -982,7 +996,8 @@ class Agent:
         text = self._session.get_user_assistant_text()
         if not text:
             return []
-        return await self.retriever.extract_and_store_facts(text, self.llm)
+        scope = getattr(self, "_memory_scope", None)
+        return await self.retriever.extract_and_store_facts(text, self.llm, scope=scope)
 
     def new_session(self) -> None:
         """Start a fresh conversation session."""

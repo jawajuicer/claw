@@ -54,6 +54,7 @@ class DiscordAdapter(BridgeAdapter):
         self._allowed_users: set[str] = set(
             str(u) for u in config.get("allowed_users", [])
         )
+        self._group_sessions: bool = config.get("group_sessions", True)
 
     # ------------------------------------------------------------------
     # helpers
@@ -79,6 +80,33 @@ class DiscordAdapter(BridgeAdapter):
         if not self._allowed_users:
             return True
         return str(user_id) in self._allowed_users
+
+    async def get_group_members(self, channel_id: str) -> list[dict]:
+        """Fetch members of a Discord channel (guild text channel).
+
+        Returns a list of dicts: [{"uuid": ..., "name": ...}, ...]
+        Excludes the bot itself.
+        """
+        if self._client is None or self._client.user is None:
+            return []
+        try:
+            channel = self._client.get_channel(int(channel_id))
+            if channel is None:
+                channel = await self._client.fetch_channel(int(channel_id))
+            if channel is None or not hasattr(channel, "members"):
+                return []
+            members = []
+            for member in channel.members:  # type: ignore[union-attr]
+                if member == self._client.user:
+                    continue
+                members.append({
+                    "uuid": str(member.id),
+                    "name": member.display_name,
+                })
+            return members
+        except Exception:
+            log.exception("[discord] Failed to fetch group members for %s", channel_id)
+            return []
 
     # ------------------------------------------------------------------
     # lifecycle
