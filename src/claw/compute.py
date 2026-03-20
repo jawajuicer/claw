@@ -179,6 +179,53 @@ def update_llama_swap_config(backend: str, gpu_layers: int) -> None:
     log.info("Updated llama-swap config: backend=%s, gpu_layers=%s", backend, gpu_layers)
 
 
+def update_speculative_config(enabled: bool, draft_model: str = "", draft_max: int = 16) -> None:
+    """Update llama-swap-config.yaml to add/remove speculative decoding flags.
+
+    When enabled, adds --model-draft, --gpu-layers-draft, and --draft-max
+    to all llama-server commands. When disabled, removes them.
+    """
+    from claw.config import PROJECT_ROOT
+
+    config_path = PROJECT_ROOT / "llama-swap-config.yaml"
+    if not config_path.exists():
+        home_path = Path.home() / "claw" / "llama-swap-config.yaml"
+        if home_path.exists():
+            config_path = home_path
+
+    if not config_path.exists():
+        log.warning("llama-swap-config.yaml not found, skipping speculative config update")
+        return
+
+    content = config_path.read_text()
+
+    # Remove any existing speculative flags
+    content = re.sub(r'\s*--model-draft\s+\S+', '', content)
+    content = re.sub(r'\s*--gpu-layers-draft\s+\d+', '', content)
+    content = re.sub(r'\s*--draft-max\s+\d+', '', content)
+
+    if enabled and draft_model:
+        def _add_spec_flags(match: re.Match) -> str:
+            line = match.group(0)
+            return (
+                line
+                + f" --model-draft {draft_model}"
+                + f" --gpu-layers-draft 99"
+                + f" --draft-max {draft_max}"
+            )
+
+        content = re.sub(
+            r'(llama-server\b[^\n]*\.gguf\b[^\n]*)',
+            _add_spec_flags,
+            content,
+        )
+        log.info("Speculative decoding enabled: draft=%s, draft_max=%d", draft_model, draft_max)
+    else:
+        log.info("Speculative decoding disabled")
+
+    config_path.write_text(content)
+
+
 async def switch_backend(
     target: str,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
@@ -309,6 +356,13 @@ async def switch_backend(
 
         try:
             await asyncio.to_thread(update_llama_swap_config, target, gpu_layers)
+
+            # Apply speculative decoding config
+            spec = settings.compute.speculative
+            spec_model = settings.compute.speculative_model
+            spec_max = settings.compute.speculative_draft_max
+            await asyncio.to_thread(update_speculative_config, spec, spec_model, spec_max)
+
             emit("config", 90, "Configuration updated")
         except Exception as exc:
             emit("config", 90, f"Config update failed: {exc}")

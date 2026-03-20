@@ -187,6 +187,9 @@ class CloudLLMConfig(BaseModel):
 class ComputeConfig(BaseModel):
     backend: str = "cpu"       # "cpu" | "cuda" | "rocm" | "vulkan"
     gpu_layers: int = 99       # --n-gpu-layers value (0 for CPU)
+    speculative: bool = False  # enable speculative decoding with draft model
+    speculative_model: str = ""  # path to draft model GGUF (e.g. "models/Qwen3.5-0.8B.gguf")
+    speculative_draft_max: int = 16  # max tokens to draft per step
 
 
 class MemoryConfig(BaseModel):
