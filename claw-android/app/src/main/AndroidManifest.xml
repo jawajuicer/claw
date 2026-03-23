@@ -36,6 +36,30 @@
             </intent-filter>
         </activity>
 
+        <!-- Assist activity: allows Claw to replace default Android assistant.
+             User selects Claw in Settings > Apps > Default apps > Digital assistant app.
+             Triggered by: home long-press, swipe gesture, steering wheel button (Android Auto). -->
+        <activity
+            android:name=".ClawAssistActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:launchMode="singleTask"
+            android:excludeFromRecents="true"
+            android:taskAffinity="">
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VOICE_COMMAND" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEARCH_LONG_PRESS" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <service
             android:name=".service.WakeWordService"
             android:exported="false"

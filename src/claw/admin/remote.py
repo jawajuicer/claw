@@ -110,7 +110,7 @@ async def remote_chat(request: Request):
 
         tools = registry.get_openai_tools() if registry else None
         try:
-            response = await agent.process_utterance(message, tools=tools or None)
+            response = await agent.process_utterance(message, tools=tools or None, interactive=True)
             tools_used = _extract_tools(agent, msg_count_before)
             await broadcaster.update_response(response)
         except Exception:
@@ -138,6 +138,7 @@ async def remote_chat(request: Request):
         "tools_used": sorted(tools_used),
         "usage": usage,
         "device": device,
+        "claude_mode": agent.claude_code_active,
     }
 
     # Extract music info — route based on audio_output setting
@@ -638,7 +639,7 @@ async def _process_text_and_respond(
     tools = registry.get_openai_tools() if registry else None
 
     try:
-        response = await agent.process_utterance(text, tools=tools or None)
+        response = await agent.process_utterance(text, tools=tools or None, interactive=True, voice_mode=True)
         tools_used = _extract_tools(agent, msg_count_before)
     except Exception:
         log.exception("Remote agent processing failed (device: %s)", device)
@@ -648,6 +649,11 @@ async def _process_text_and_respond(
 
     await broadcaster.update_response(response)
     await broadcaster.update_state("idle")
+
+    # In Claude Code mode, agent sets tts_override with a voice summary.
+    # Use that for TTS instead of the full response.
+    tts_text = agent.tts_override or response
+    agent.tts_override = None
 
     from claw.config import get_settings
     settings = get_settings()
@@ -660,6 +666,7 @@ async def _process_text_and_respond(
         "text": response,
         "tools_used": sorted(tools_used),
         "usage": usage,
+        "claude_mode": agent.claude_code_active,
     }
 
     music = _extract_music_from_session(agent, msg_count_before)
@@ -680,11 +687,12 @@ async def _process_text_and_respond(
     log.info("Remote response (device: %s, audio: %s): %s", device, audio_output, response[:100])
 
     # TTS — route based on audio_output setting
+    # Use tts_text (voice summary in Claude Code mode, or full response otherwise)
     if tts and settings.tts.enabled:
         if audio_output == "phone":
             # Send WAV bytes over WebSocket to phone
             try:
-                wav_bytes = await tts.synthesize_wav(response)
+                wav_bytes = await tts.synthesize_wav(tts_text)
                 if wav_bytes:
                     await ws.send_json({"type": "tts_start", "size": len(wav_bytes)})
                     chunk_size = 32768
@@ -696,7 +704,7 @@ async def _process_text_and_respond(
         else:
             # Play TTS on computer speakers
             try:
-                await tts.speak(response)
+                await tts.speak(tts_text)
                 log.info("TTS played on computer speakers (device: %s)", device)
             except Exception:
                 log.exception("Local TTS playback failed (device: %s)", device)

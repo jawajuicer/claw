@@ -28,7 +28,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
 import com.claw.assistant.ui.theme.ClawAccent
@@ -43,8 +45,18 @@ data class ChatMessage(
     val isUser: Boolean,
     val toolsUsed: List<String> = emptyList(),
     val timestamp: Long = System.currentTimeMillis(),
-    val status: String = "sent"  // "sent", "failed", "pending"
+    val status: String = "sent",  // "sent", "failed", "pending"
+    val isClaudeCode: Boolean = false
 )
+
+private val ClaudeCodeBubble = Color(0xFF1E1E3F)
+private val ClaudeCodeAccent = Color(0xFFB388FF)
+
+/** Check if content likely contains code blocks (triple backticks or indented code). */
+private fun containsCode(text: String): Boolean {
+    return text.contains("```") ||
+        text.lines().any { it.startsWith("    ") && it.trim().isNotEmpty() }
+}
 
 @Composable
 fun MessageBubble(
@@ -53,6 +65,32 @@ fun MessageBubble(
     modifier: Modifier = Modifier
 ) {
     val maxWidth = (LocalConfiguration.current.screenWidthDp * 0.8).dp
+
+    val isClaudeCodeAssistant = message.isClaudeCode && !message.isUser
+
+    val senderLabel = when {
+        message.isUser -> "You"
+        isClaudeCodeAssistant -> "Claude Code"
+        else -> "The Claw"
+    }
+
+    val senderColor = when {
+        message.isUser -> ClawAccent
+        isClaudeCodeAssistant -> ClaudeCodeAccent
+        else -> ClawTextSecondary
+    }
+
+    val bubbleColor = when {
+        message.isUser -> ClawUserBubble
+        isClaudeCodeAssistant -> ClaudeCodeBubble
+        else -> ClawAssistantBubble
+    }
+
+    val contentFontFamily = if (isClaudeCodeAssistant && containsCode(message.content)) {
+        FontFamily.Monospace
+    } else {
+        FontFamily.SansSerif
+    }
 
     AnimatedVisibility(
         visible = true,
@@ -66,9 +104,9 @@ fun MessageBubble(
         ) {
             // Sender label
             Text(
-                text = if (message.isUser) "You" else "The Claw",
+                text = senderLabel,
                 style = MaterialTheme.typography.labelSmall,
-                color = if (message.isUser) ClawAccent else ClawTextSecondary,
+                color = senderColor,
                 modifier = Modifier.padding(bottom = 2.dp, start = 4.dp, end = 4.dp)
             )
 
@@ -80,14 +118,15 @@ fun MessageBubble(
                     bottomStart = if (message.isUser) 16.dp else 4.dp,
                     bottomEnd = if (message.isUser) 4.dp else 16.dp
                 ),
-                color = if (message.isUser) ClawUserBubble else ClawAssistantBubble,
+                color = bubbleColor,
                 modifier = Modifier.widthIn(max = maxWidth)
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
                     Text(
                         text = message.content,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontFamily = contentFontFamily
                     )
 
                     // Tools used indicator

@@ -22,7 +22,8 @@ import kotlin.coroutines.resumeWithException
 data class ChatResponse(
     val content: String,
     val toolsUsed: List<String>,
-    val music: MusicInfo?
+    val music: MusicInfo?,
+    val claudeMode: Boolean = false
 )
 
 data class MusicInfo(
@@ -116,10 +117,13 @@ class ClawApiClient {
                 )
             } else null
 
+            val claudeMode = responseJson.optBoolean("claude_mode", false)
+
             ChatResponse(
                 content = responseJson.optString("content", ""),
                 toolsUsed = toolsUsed,
-                music = music
+                music = music,
+                claudeMode = claudeMode
             )
         }
     }
@@ -208,7 +212,8 @@ class ClawApiClient {
                                     streamUrl = musicJson.optString("stream_url", "")
                                 )
                             } else null
-                            callback.onResponse(json.optString("text", ""), music)
+                            val claudeMode = json.optBoolean("claude_mode", false)
+                            callback.onResponse(json.optString("text", ""), music, claudeMode)
                         }
                         "tts_start" -> {
                             val size = json.optInt("size", 0)
@@ -306,7 +311,7 @@ class ClawApiClient {
         fun onConnected()
         fun onDisconnected()
         fun onTranscription(text: String)
-        fun onResponse(text: String, music: MusicInfo?)
+        fun onResponse(text: String, music: MusicInfo?, claudeMode: Boolean = false)
         fun onTtsStart(size: Int)
         fun onTtsData(data: ByteArray)
         fun onTtsEnd()

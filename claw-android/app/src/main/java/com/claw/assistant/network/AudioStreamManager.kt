@@ -63,8 +63,8 @@ class AudioStreamManager(
             transcriptionCallback?.invoke(text)
         }
 
-        override fun onResponse(text: String, music: MusicInfo?) {
-            Log.d(TAG, "Response: $text")
+        override fun onResponse(text: String, music: MusicInfo?, claudeMode: Boolean) {
+            Log.d(TAG, "Response: $text (claudeMode=$claudeMode)")
             responseCallback?.invoke(text, music)
         }
 

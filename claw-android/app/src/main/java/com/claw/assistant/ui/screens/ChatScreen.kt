@@ -29,6 +29,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Circle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AlertDialog
@@ -95,7 +97,8 @@ fun ChatMessage.toEntity() = MessageEntity(
     isUser = isUser,
     toolsUsed = toolsUsed.joinToString(TOOLS_DELIMITER),
     timestamp = timestamp,
-    status = status
+    status = status,
+    isClaudeCode = isClaudeCode
 )
 
 fun MessageEntity.toChatMessage() = ChatMessage(
@@ -105,7 +108,8 @@ fun MessageEntity.toChatMessage() = ChatMessage(
     toolsUsed = if (toolsUsed.isBlank()) emptyList()
         else toolsUsed.split(TOOLS_DELIMITER).filter { it.isNotBlank() },
     timestamp = timestamp,
-    status = status
+    status = status,
+    isClaudeCode = isClaudeCode
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -129,6 +133,7 @@ fun ChatScreen(
     var inputText by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var isClaudeMode by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
@@ -192,11 +197,13 @@ fun ChatScreen(
         scope.launch {
             try {
                 val response = apiClient.chatWithRetry(text)
+                isClaudeMode = response.claudeMode
                 val assistantMessage = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     content = response.content,
                     isUser = false,
-                    toolsUsed = response.toolsUsed
+                    toolsUsed = response.toolsUsed,
+                    isClaudeCode = response.claudeMode
                 )
                 messages.add(assistantMessage)
                 // Save assistant message to DB
@@ -265,8 +272,17 @@ fun ChatScreen(
         TopAppBar(
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (isClaudeMode) {
+                        Icon(
+                            imageVector = Icons.Default.Code,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                            tint = ClawAccent
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                    }
                     Text(
-                        text = "The Claw",
+                        text = if (isClaudeMode) "Claude Code" else "The Claw",
                         style = MaterialTheme.typography.titleLarge,
                         color = ClawTextPrimary
                     )
@@ -330,6 +346,50 @@ fun ChatScreen(
                     color = ClawAccent,
                     style = MaterialTheme.typography.labelLarge
                 )
+            }
+        }
+
+        // Claude Code mode banner
+        if (isClaudeMode) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(ClawAccent.copy(alpha = 0.10f))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Code,
+                    contentDescription = null,
+                    tint = ClawAccent,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Claude Code Mode",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = ClawTextPrimary,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(
+                    onClick = {
+                        inputText = "exit claude"
+                        sendMessage()
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Exit Claude Code mode",
+                        tint = ClawTextSecondary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "Exit",
+                        color = ClawTextSecondary,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
             }
         }
 
