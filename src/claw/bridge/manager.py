@@ -294,11 +294,14 @@ class BridgeManager:
         else:
             agent_text = msg.text
 
-        async with self._chat_lock:
-            # Swap in user's session
-            original_session = self._agent._session
-            self._agent._session = user_session
+        # Check if Claude relay is active — relay doesn't use session state,
+        # so we can skip the lock to avoid blocking other messages for ~3 min.
+        is_relay = (
+            hasattr(self._agent, '_claude_relay')
+            and self._agent._claude_relay.active
+        )
 
+        if is_relay:
             try:
                 t_agent = time.monotonic()
                 response = await self._agent.process_utterance(
@@ -308,18 +311,39 @@ class BridgeManager:
                     interactive=True,
                 )
                 log.info(
-                    "[%s] Agent processing: %.1fms",
+                    "[%s] Relay processing (no lock): %.1fms",
                     msg.platform, (time.monotonic() - t_agent) * 1000,
                 )
             except Exception:
-                log.exception("[%s] Agent processing failed for %s", msg.platform, msg.user_id)
+                log.exception("[%s] Relay processing failed for %s", msg.platform, msg.user_id)
                 response = None
-            finally:
-                # Save updated session and restore original
-                self._session_store.update(
-                    session_key, self._agent._session
-                )
-                self._agent._session = original_session
+        else:
+            async with self._chat_lock:
+                # Swap in user's session
+                original_session = self._agent._session
+                self._agent._session = user_session
+
+                try:
+                    t_agent = time.monotonic()
+                    response = await self._agent.process_utterance(
+                        agent_text, tools=tools, context=context,
+                        _skip_session_memory=True,
+                        memory_scope=memory_scope,
+                        interactive=True,
+                    )
+                    log.info(
+                        "[%s] Agent processing: %.1fms",
+                        msg.platform, (time.monotonic() - t_agent) * 1000,
+                    )
+                except Exception:
+                    log.exception("[%s] Agent processing failed for %s", msg.platform, msg.user_id)
+                    response = None
+                finally:
+                    # Save updated session and restore original
+                    self._session_store.update(
+                        session_key, self._agent._session
+                    )
+                    self._agent._session = original_session
 
         log.info(
             "[%s] Total dispatch: %.1fms",
@@ -341,13 +365,16 @@ class BridgeManager:
                 chunks = format_response(response, adapter.LIMITS)
                 # Return first chunk; send remaining chunks directly
                 if len(chunks) > 1:
-                    for chunk in chunks[1:]:
+                    for i, chunk in enumerate(chunks[1:]):
                         try:
                             await adapter.send_message(
                                 msg.channel_id, chunk, msg.reply_context
                             )
                         except Exception:
-                            log.exception("[%s] Failed to send continuation chunk", msg.platform)
+                            log.error(
+                                "[%s] Failed to send chunk %d/%d after retries",
+                                msg.platform, i + 2, len(chunks),
+                            )
                 return chunks[0] if chunks else response
             return response
 

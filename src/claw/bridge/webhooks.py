@@ -63,6 +63,7 @@ async def telegram_webhook(request: Request) -> JSONResponse:
         await adapter.handle_webhook(body)
     except Exception:
         log.exception("Telegram webhook processing failed")
+        return JSONResponse({"error": "Processing failed"}, status_code=500)
 
     return JSONResponse({"ok": True})
 
@@ -88,6 +89,7 @@ async def signal_webhook(request: Request) -> JSONResponse:
         await adapter.handle_webhook(body)
     except Exception:
         log.exception("Signal webhook processing failed")
+        return JSONResponse({"error": "Processing failed"}, status_code=500)
 
     return JSONResponse({"ok": True})
 

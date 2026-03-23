@@ -579,16 +579,30 @@ class SignalAdapter(BridgeAdapter):
 
         log.debug("[signal] send_message payload: %s", {k: v for k, v in payload.items() if k != "message"})
 
-        try:
-            resp = await client.post("/v2/send", json=payload)
-            if resp.status_code not in (200, 201):
+        max_retries = 3
+        last_exc: Exception | None = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                resp = await client.post("/v2/send", json=payload)
+                if resp.status_code in (200, 201):
+                    return  # success
                 log.warning(
-                    "[signal] Send failed (%d): %s",
-                    resp.status_code,
-                    resp.text[:200],
+                    "[signal] Send attempt %d/%d failed (%d): %s",
+                    attempt, max_retries, resp.status_code, resp.text[:200],
                 )
-        except Exception:
-            log.exception("[signal] Failed to send message to %s", channel_id)
+                last_exc = RuntimeError(f"Signal API returned {resp.status_code}")
+            except Exception as exc:
+                log.warning(
+                    "[signal] Send attempt %d/%d error: %s",
+                    attempt, max_retries, exc,
+                )
+                last_exc = exc
+
+            if attempt < max_retries:
+                await asyncio.sleep(1.0 * attempt)  # 1s, 2s backoff
+
+        log.error("[signal] All %d send attempts failed for %s", max_retries, channel_id)
+        raise last_exc  # type: ignore[misc]  # propagate so callers know
 
     async def send_typing(self, channel_id: str) -> None:
         """Send a typing indicator via the signal-cli-rest-api."""

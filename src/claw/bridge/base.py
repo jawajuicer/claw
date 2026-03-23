@@ -97,7 +97,10 @@ class BridgeAdapter(ABC):
         # Route through manager for agent processing
         response = await self._manager.dispatch(msg)
         if response:
-            await self.send_message(msg.channel_id, response, msg.reply_context)
+            try:
+                await self.send_message(msg.channel_id, response, msg.reply_context)
+            except Exception:
+                log.error("[%s] Failed to send response to %s", self.PLATFORM, msg.channel_id)
 
     async def run_with_reconnect(self) -> None:
         """Run the adapter with exponential backoff reconnection.
