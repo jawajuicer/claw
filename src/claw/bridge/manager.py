@@ -305,6 +305,7 @@ class BridgeManager:
                     agent_text, tools=tools, context=context,
                     _skip_session_memory=True,
                     memory_scope=memory_scope,
+                    interactive=True,
                 )
                 log.info(
                     "[%s] Agent processing: %.1fms",

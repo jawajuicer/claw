@@ -155,6 +155,8 @@ class CloudProvider(BaseModel):
 class CloudLLMConfig(BaseModel):
     """Optional cloud LLM backends (Claude, Gemini) as alternatives to local inference."""
     active_provider: str = "local"  # "local", "claude", "claude-cli", "gemini"
+    escalation_mode: str = "auto"  # "auto" (silent), "ask" (confirm), "off"
+    escalation_provider: str = "auto"  # "auto" (first available), "claude", "gemini", etc.
     providers: dict[str, CloudProvider] = Field(default_factory=lambda: {
         "claude": CloudProvider(
             base_url="https://api.anthropic.com/v1/",
@@ -189,6 +191,7 @@ class ComputeConfig(BaseModel):
     gpu_layers: int = 99       # --n-gpu-layers value (0 for CPU)
     speculative: bool = False  # enable speculative decoding with draft model
     speculative_model: str = ""  # path to draft model GGUF (e.g. "models/Qwen3.5-0.8B.gguf")
+    speculative_main_model: str = ""  # path to main model GGUF (selected when speculative enabled)
     speculative_draft_max: int = 16  # max tokens to draft per step
 
 
@@ -472,6 +475,16 @@ class AdminConfig(BaseModel):
     auth_username: str = "admin"
 
 
+class ClaudeRelayConfig(BaseModel):
+    """Claude Code relay — SSH to dev machine for coding via any interface."""
+    enabled: bool = False
+    host: str = ""              # dev machine IP (e.g. "10.1.92.101")
+    user: str = ""              # SSH user on dev machine
+    password: str = ""          # SSH password
+    project_dir: str = ""       # project directory on dev machine
+    skip_permissions: bool = False  # pass --dangerously-skip-permissions to claude
+
+
 # ── Root settings ───────────────────────────────────────────────────────────
 
 def _migrate_google_config(data: dict[str, Any]) -> dict[str, Any]:
@@ -566,6 +579,7 @@ class Settings(BaseSettings):
     bridges: BridgesConfig = Field(default_factory=BridgesConfig)
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
     channel_profiles: ChannelProfilesConfig = Field(default_factory=ChannelProfilesConfig)
+    claude_relay: ClaudeRelayConfig = Field(default_factory=ClaudeRelayConfig)
 
     @classmethod
     def settings_customise_sources(

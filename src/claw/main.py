@@ -363,9 +363,16 @@ class Claw:
                 log.info("User said: %s", text)
 
                 # Agent processing (with tools so voice can use get_time etc.)
-                response = await self.agent.process_utterance(text, tools=tools)
+                response = await self.agent.process_utterance(
+                    text, tools=tools, interactive=True, voice_mode=True,
+                )
                 await self.broadcaster.update_response(response)
-                log.info("Claw responds: %s", response)
+                log.info("Claw responds: %s", response[:200])
+
+                # In Claude Code mode, TTS speaks the voice summary,
+                # not the full response (which goes to admin panel above).
+                tts_text = self.agent.tts_override or response
+                self.agent.tts_override = None
 
                 # TTS playback
                 if self.tts and self.settings.tts.voice_loop_enabled:
@@ -387,7 +394,7 @@ class Claw:
                         await self.broadcaster.update_state("speaking")
                         wake.pause()
                         try:
-                            await self.tts.speak(response)
+                            await self.tts.speak(tts_text)
                             log.info("TTS playback complete")
                         except Exception:
                             log.exception("TTS playback failed")
@@ -403,6 +410,13 @@ class Claw:
                 else:
                     log.info("TTS skipped (tts=%s, voice_loop=%s)",
                              self.tts is not None, self.settings.tts.voice_loop_enabled)
+
+                # Claude Code mode: always listen for next message (no wake word)
+                if self.agent.claude_code_active:
+                    log.info("Claude Code mode — listening for next message")
+                    await self.broadcaster.update_state("listening")
+                    await asyncio.to_thread(play_listening_chime)
+                    continue
 
                 # If Claw asked a follow-up question, listen again.
                 # Check last 10 chars to handle trailing emojis after "?"
@@ -450,15 +464,21 @@ class Claw:
             await self.broadcaster.update_transcription(text)
 
             tools = self.registry.get_openai_tools()
-            response = await self.agent.process_utterance(text, tools=tools or None)
+            response = await self.agent.process_utterance(
+                text, tools=tools or None, interactive=True,
+            )
 
             print(f"\nClaw: {response}")
             await self.broadcaster.update_response(response)
 
+            # In Claude Code mode, TTS speaks the summary
+            tts_text = self.agent.tts_override or response
+            self.agent.tts_override = None
+
             # TTS playback in CLI mode
             if self.tts and self.settings.tts.voice_loop_enabled:
                 try:
-                    await self.tts.speak(response)
+                    await self.tts.speak(tts_text)
                 except Exception:
                     log.exception("TTS playback failed")
 

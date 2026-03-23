@@ -9,12 +9,41 @@ import re
 import time
 from dataclasses import dataclass
 
+from claw.agent_core.claude_relay import ClaudeRelay
 from claw.agent_core.conversation import ConversationSession
 from claw.agent_core.llm_client import LLMClient
 from claw.config import get_settings
 from claw.memory_engine.retriever import MemoryRetriever
 
 log = logging.getLogger(__name__)
+
+# Claude Code mode activation patterns.
+# "claude" alone or with flags (e.g. "claude --dangerously-skip-permissions").
+_CLAUDE_MODE_ON_RE = re.compile(
+    r"^\s*(?:connect(?:\s+me)?\s+to\s+claude|talk\s+to\s+claude"
+    r"|claude\s+code\s+mode|switch\s+to\s+claude"
+    r"|open\s+(?:a\s+)?claude\s+(?:code\s+)?session"
+    r"|start\s+(?:a\s+)?claude\s+(?:code\s+)?session"
+    r"|claude\s+code"
+    r"|claude)"  # just "claude" (with optional flags handled below)
+    r"(?:\s+--[\w-]+)*"  # optional CLI-style flags
+    r"(?:\s+(?:please|now|for\s+me))?\s*[.!?]*\s*$",
+    re.I,
+)
+
+# Claude Code mode deactivation patterns.
+# "exit" alone works when in relay mode.
+_CLAUDE_MODE_OFF_RE = re.compile(
+    r"^\s*(?:disconnect(?:\s+from\s+claude)?"
+    r"|exit(?:\s+claude(?:\s+(?:code\s+)?mode)?)?"
+    r"|leave\s+claude(?:\s+(?:code\s+)?mode)?"
+    r"|back\s+to\s+normal(?:\s+mode)?"
+    r"|normal\s+mode"
+    r"|stop\s+claude(?:\s+(?:code\s+)?mode)?"
+    r"|end\s+claude\s+(?:code\s+)?session"
+    r"|close\s+claude(?:\s+session)?)\s*[.!?]*\s*$",
+    re.I,
+)
 
 # Fast keyword routing — bypasses LLM routing for high-confidence patterns.
 # Each entry maps a regex pattern to the set of tool names it should select.
@@ -139,6 +168,7 @@ class UsageStats:
     elapsed_s: float = 0.0
     timed_out: bool = False
     provider: str = "local"  # which provider actually served
+    tier: str = "standard"  # "fast", "standard", "cloud"
 
     @property
     def tokens_per_sec(self) -> float:
@@ -165,6 +195,7 @@ class UsageStats:
             "elapsed_s": round(self.elapsed_s, 2),
             "tokens_per_sec": round(self.tokens_per_sec, 1),
             "provider": self.provider,
+            "tier": self.tier,
         }
 
 
@@ -191,10 +222,18 @@ class Agent:
         self._model_override: str | None = None
         self._pending_escalation: str | None = None
         self._memory_scope: str | None = None
+        # Claude Code voice relay
+        self._claude_relay = ClaudeRelay()
+        self.tts_override: str | None = None  # voice summary for TTS (caller reads this)
 
     @property
     def session(self) -> ConversationSession | None:
         return self._session
+
+    @property
+    def claude_code_active(self) -> bool:
+        """Whether the agent is in Claude Code relay mode."""
+        return self._claude_relay.active
 
     async def process_utterance(
         self,
@@ -204,6 +243,8 @@ class Agent:
         context: str | None = None,
         _skip_session_memory: bool = False,
         memory_scope: str | None = None,
+        interactive: bool = False,
+        voice_mode: bool = False,
     ) -> str:
         """Process a user utterance through the agent loop.
 
@@ -217,12 +258,30 @@ class Agent:
                      init (caller already injected memory via context).
             memory_scope: Memory scope for reads/writes (e.g. "personal", "work").
                      None = no filtering (backward compatible for voice/CLI).
+            interactive: If True, this is a human-facing caller that can
+                     activate/use Claude Code relay. Set by voice, CLI, and
+                     bridge callers. NOT set by cron, webhooks, or system calls.
+            voice_mode: If True, request a voice summary for TTS (voice loop only).
 
         Returns:
             The final assistant response text.
         """
         if not model and self._model_override:
             model = self._model_override
+
+        # Claude Code relay mode — bypass ALL local processing.
+        # Available to any interactive caller (voice, CLI, bridges).
+        self.tts_override = None  # reset each call
+        if interactive and self._claude_relay.active:
+            if _CLAUDE_MODE_OFF_RE.match(text.strip()):
+                self._claude_relay.reset()
+                return "Disconnected from Claude Code. Back to normal mode."
+            full_response, summary = await self._claude_relay.send(
+                text, voice_mode=voice_mode,
+            )
+            if summary:
+                self.tts_override = summary  # voice callers use this for TTS
+            return full_response  # full response for display
 
         settings = get_settings()
         cfg = settings.llm
@@ -289,12 +348,13 @@ class Agent:
         self.retriever.store_conversation_turn("user", text, self._session.session_id, scope=memory_scope)
 
         # Fast path: directly dispatch simple tool commands without LLM
-        direct = await self._try_direct_dispatch(text)
+        direct = await self._try_direct_dispatch(text, interactive=interactive)
         if direct is not None:
             self._session.add_assistant(direct)
             self.retriever.store_conversation_turn("assistant", direct, self._session.session_id, scope=memory_scope)
             stats.elapsed_s = time.monotonic() - t0
             self.last_usage = stats
+            await self._record_usage(stats)
             log.info("Direct dispatch: %s", direct[:100])
             return direct
 
@@ -303,13 +363,12 @@ class Agent:
         if tools:
             tools = await self._route_tools(text, tools)
 
-        # Use fast_model for simple conversational queries (no tools needed)
+        # Tier routing: fast model for simple queries, standard for everything else
         effective_model = model
-        if not effective_model and not tools:
-            fast = cfg.fast_model
-            if fast:
-                effective_model = fast
-                log.info("Using fast model '%s' for no-tool query", fast)
+        if not effective_model and self._should_use_fast_model(text, bool(tools)):
+            effective_model = cfg.fast_model
+            stats.tier = "fast"
+            log.info("Tier 1 (fast model '%s') for simple query", effective_model)
 
         for iteration in range(max_iterations):
             log.info("Agent iteration %d/%d", iteration + 1, max_iterations)
@@ -403,7 +462,7 @@ class Agent:
         await self._record_usage(stats)
         return content
 
-    async def _try_direct_dispatch(self, text: str) -> str | None:
+    async def _try_direct_dispatch(self, text: str, *, interactive: bool = False) -> str | None:
         """Bypass LLM for simple tool commands that can be parsed directly.
 
         Returns the tool result string, or None to fall through to LLM.
@@ -421,13 +480,8 @@ class Agent:
                 text_lower,
             ):
                 self._pending_escalation = None
-                try:
-                    return str(await self.tool_router.call_tool(
-                        "gemini_ask", {"question": question},
-                    ))
-                except Exception:
-                    log.exception("Escalation gemini_ask failed")
-                    return None
+                result = await self._escalate_to_cloud(question)
+                return result
             elif re.match(
                 r"^\s*(?:no|nah|nope|nevermind|no\s+thanks|never\s+mind)\s*[.!?]*\s*$",
                 text_lower,
@@ -447,24 +501,34 @@ class Agent:
         ):
             return "Okay."
 
-        # "ask gemini ..." / "have gemini ..." / "use gemini to ..." / "gemini, ..."
-        gemini_match = re.match(
-            r"(?:ask\s+gemini\s+(?:to\s+|about\s+|if\s+|why\s+|how\s+|what\s+|where\s+|when\s+|whether\s+)?)"
-            r"|(?:have\s+gemini\s+)"
-            r"|(?:use\s+gemini\s+(?:to\s+)?)"
-            r"|(?:gemini[,:]?\s+)",
+        # Claude Code mode activation (any interactive caller — not cron/webhooks)
+        if interactive and _CLAUDE_MODE_ON_RE.match(text.strip()):
+            if not self._claude_relay.available:
+                return (
+                    "Claude Code relay is not configured. "
+                    "Set claude_relay settings in config.yaml."
+                )
+            # Parse optional flags (e.g. "claude --dangerously-skip-permissions")
+            if "--dangerously-skip-permissions" in text_lower:
+                self._claude_relay.skip_permissions_override = True
+                log.info("Claude Code relay: --dangerously-skip-permissions enabled")
+            self._claude_relay.active = True
+            log.info("Claude Code relay mode activated")
+            return "Connected to Claude Code. Go ahead."
+
+        # "ask gemini/claude/the cloud ..." direct escalation
+        cloud_match = re.match(
+            r"(?:ask|have|use)\s+(?:gemini|claude|the\s+cloud)\s+"
+            r"(?:to\s+|about\s+|if\s+|why\s+|how\s+|what\s+|where\s+|when\s+|whether\s+)?",
             text, re.I,
         )
-        if gemini_match and get_settings().gemini.enabled:
-            question = text[gemini_match.end():].strip()
+        if not cloud_match:
+            cloud_match = re.match(r"(?:gemini|claude)[,:]?\s+", text, re.I)
+        if cloud_match:
+            question = text[cloud_match.end():].strip()
             if question:
-                try:
-                    return str(await self.tool_router.call_tool(
-                        "gemini_ask", {"question": question},
-                    ))
-                except Exception:
-                    log.exception("Direct dispatch gemini_ask failed")
-                    return None
+                # _escalate_to_cloud already falls back to gemini_ask MCP tool
+                return await self._escalate_to_cloud(question)
 
         # pin_song: "pin this as X" / "save this as X" / "remember this as X"
         pin_match = re.match(
@@ -571,6 +635,30 @@ class Agent:
 
         return None
 
+    # Patterns indicating a query that needs Tier 2 (standard) rather than Tier 1 (fast)
+    _COMPLEX_QUERY_RE = re.compile(
+        r"\b(?:explain|compare|contrast|analyze|summarize|write|draft|compose"
+        r"|translate|implement|debug|refactor|difference\s+between"
+        r"|pros?\s+and\s+cons?|step\s+by\s+step"
+        r"|how\s+does|how\s+do|why\s+does|why\s+do|why\s+is|why\s+are"
+        r"|what\s+are\s+the|tell\s+me\s+about|describe\s+(?:how|the|a))\b",
+        re.I,
+    )
+
+    def _should_use_fast_model(self, text: str, has_tools: bool) -> bool:
+        """Determine if Tier 1 (fast model) is appropriate for this query."""
+        cfg = get_settings().llm
+        if not cfg.fast_model:
+            return False
+        if has_tools:
+            return False
+        # Long messages likely need deeper reasoning
+        if len(text.split()) > 20:
+            return False
+        if self._COMPLEX_QUERY_RE.search(text):
+            return False
+        return True
+
     # Patterns that suggest the LLM is uncertain about its answer
     _LOW_CONFIDENCE_RE = re.compile(
         r"(?:I don'?t know|I'?m not sure|I don'?t have access to"
@@ -580,6 +668,58 @@ class Agent:
         re.I,
     )
 
+    async def _escalate_to_cloud(self, question: str) -> str | None:
+        """Execute escalation to the configured cloud provider.
+
+        Temporarily switches the LLM client to the cloud provider,
+        runs the query, then restores the original provider.
+        Falls back to the gemini_ask MCP tool if no cloud client is available.
+        """
+        settings = get_settings()
+        cloud_cfg = settings.cloud_llm
+        provider = cloud_cfg.escalation_provider
+
+        # "auto" = pick first available cloud provider
+        if provider == "auto":
+            for name in cloud_cfg.providers:
+                if name in self.llm._cloud_clients:
+                    provider = name
+                    break
+            else:
+                provider = None
+
+        # Try cloud LLM client directly (no shared state mutation)
+        if provider and provider in self.llm._cloud_clients:
+            client, model, temperature, max_tokens = self.llm._get_provider_params(provider)
+            if client:
+                try:
+                    response = await client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": settings.llm.system_prompt},
+                            {"role": "user", "content": question},
+                        ],
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+                    result = response.choices[0].message.content
+                    log.info("Cloud escalation to %s succeeded", provider)
+                    return result or None
+                except Exception:
+                    log.exception("Cloud escalation to %s failed", provider)
+                    return None
+
+        # Fallback: gemini_ask MCP tool (legacy path)
+        if self.tool_router and settings.gemini.enabled:
+            try:
+                return str(await self.tool_router.call_tool(
+                    "gemini_ask", {"question": question},
+                ))
+            except Exception:
+                log.exception("Escalation gemini_ask fallback failed")
+
+        return None
+
     async def _maybe_escalate(
         self,
         original_question: str,
@@ -587,35 +727,59 @@ class Agent:
         stats: UsageStats,
         t0: float,
     ) -> str:
-        """Check LLM response for low confidence and optionally escalate to Gemini."""
-        if not self.tool_router or not self._LOW_CONFIDENCE_RE.search(content):
+        """Check LLM response for low confidence and optionally escalate to cloud."""
+        if not self._LOW_CONFIDENCE_RE.search(content):
             return content
 
-        cfg = get_settings().gemini
-        if not cfg.enabled:
-            return content
+        settings = get_settings()
+        cloud_cfg = settings.cloud_llm
 
-        mode = cfg.escalation_mode
+        # Determine escalation mode: prefer cloud_llm setting, fall back to gemini setting
+        mode = cloud_cfg.escalation_mode
         if mode == "off":
+            # Check legacy gemini escalation as fallback
+            gemini_cfg = settings.gemini
+            if gemini_cfg.enabled and gemini_cfg.escalation_mode != "off":
+                mode = gemini_cfg.escalation_mode
+            else:
+                return content
+
+        # Check if any cloud provider is available
+        has_cloud = any(name in self.llm._cloud_clients for name in cloud_cfg.providers)
+        has_gemini_tool = self.tool_router and settings.gemini.enabled
+        if not has_cloud and not has_gemini_tool:
             return content
 
         if mode == "auto":
-            try:
-                result = str(await self.tool_router.call_tool(
-                    "gemini_ask", {"question": original_question},
-                ))
-                log.info("Auto-escalated to Gemini: %s", result[:100])
+            result = await self._escalate_to_cloud(original_question)
+            if result:
+                stats.tier = "cloud"
+                # Resolve actual provider name for cost tracking
+                esc_provider = cloud_cfg.escalation_provider
+                if esc_provider == "auto":
+                    for name in cloud_cfg.providers:
+                        if name in self.llm._cloud_clients:
+                            esc_provider = name
+                            break
+                stats.provider = esc_provider
+                log.info("Auto-escalated to %s: %s", esc_provider, result[:100])
                 return result
-            except Exception:
-                log.exception("Auto-escalation gemini_ask failed")
-                return content
+            return content
 
-        # mode == "ask" (default)
+        # mode == "ask"
         self._pending_escalation = original_question
+        # Build a friendly provider name for the prompt
+        provider = cloud_cfg.escalation_provider
+        if provider == "auto":
+            for name in cloud_cfg.providers:
+                if name in self.llm._cloud_clients:
+                    provider = name
+                    break
+        provider_label = provider.replace("-", " ").replace("_", " ").title() if provider != "auto" else "a cloud model"
         return (
             content
-            + "\n\nI'm not fully confident in that answer. "
-            "Would you like me to ask Gemini?"
+            + f"\n\nI'm not fully confident in that answer. "
+            f"Would you like me to ask {provider_label}?"
         )
 
     def _keyword_route(self, text: str, tools: list[dict]) -> list[dict] | None:
@@ -685,6 +849,12 @@ class Agent:
            "tools_used": [...], "usage": {...}}
         - {"type": "error",       "message": "<...>"}
         """
+        # Streaming is not supported in Claude Code relay mode.
+        # The relay runs a subprocess and returns a complete response.
+        if self._claude_relay.active:
+            yield {"type": "error", "message": "Claude Code relay mode is active. Use the non-streaming endpoint, or disconnect from Claude Code first."}
+            return
+
         if not model and self._model_override:
             model = self._model_override
 
@@ -767,13 +937,12 @@ class Agent:
             if tools:
                 tools = await self._route_tools(text, tools)
 
-            # Use fast_model for simple conversational queries (no tools needed)
+            # Tier routing: fast model for simple queries, standard for everything else
             effective_model = model
-            if not effective_model and not tools:
-                fast = cfg.fast_model
-                if fast:
-                    effective_model = fast
-                    log.info("Using fast model '%s' for no-tool streaming query", fast)
+            if not effective_model and self._should_use_fast_model(text, bool(tools)):
+                effective_model = cfg.fast_model
+                stats.tier = "fast"
+                log.info("Tier 1 (fast model '%s') for simple streaming query", effective_model)
 
             # ── Streaming agent loop ───────────────────────────────────
             for iteration in range(max_iterations):
@@ -986,7 +1155,7 @@ class Agent:
         if self.usage_tracker and stats.total_tokens > 0:
             await self.usage_tracker.record(
                 stats.prompt_tokens, stats.completion_tokens, stats.total_tokens,
-                provider=stats.provider,
+                provider=stats.provider, tier=stats.tier,
             )
 
     async def extract_facts(self) -> list[str]:

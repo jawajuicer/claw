@@ -11,6 +11,7 @@ import numpy as np
 import sounddevice as sd
 
 from claw.audio_pipeline.tts.engine import TTSAudio, TTSEngine
+from claw.audio_pipeline.tts.sanitizer import sanitize_for_speech
 from claw.config import get_settings, on_reload
 
 log = logging.getLogger(__name__)
@@ -85,6 +86,10 @@ class TTSManager:
     def _speak_blocking(self, text: str) -> None:
         """Blocking synthesis + speaker playback (runs in thread)."""
         try:
+            text = sanitize_for_speech(text)
+            if not text:
+                log.info("TTS skipped: text empty after sanitization")
+                return
             audio = self._engine.synthesize(text)
             self._play_pcm(audio)
         except Exception:
