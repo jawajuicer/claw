@@ -1808,6 +1808,68 @@ async def api_compute_progress():
     return EventSourceResponse(generate())
 
 
+@router.get("/api/compute/gguf-models")
+async def api_compute_gguf_models():
+    """Scan for available GGUF model files on disk."""
+    from claw.compute import scan_gguf_models
+
+    try:
+        models = await asyncio.to_thread(scan_gguf_models)
+        return {"models": models}
+    except Exception as exc:
+        log.exception("GGUF model scan failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@router.post("/api/compute/apply-speculative")
+async def api_compute_apply_speculative(request: Request):
+    """Save speculative decoding settings, update llama-swap config, and restart."""
+    import subprocess
+
+    from claw.compute import update_speculative_config
+    from claw.config import get_settings, reload_settings
+
+    body = await request.json()
+    enabled = bool(body.get("speculative", False))
+    draft_model = body.get("speculative_model", "")
+    main_model = body.get("speculative_main_model", "")
+    draft_max = int(body.get("speculative_draft_max", 16))
+
+    # Save to config.yaml
+    settings = get_settings()
+    current = settings.model_dump()
+    current["compute"]["speculative"] = enabled
+    current["compute"]["speculative_model"] = draft_model
+    current["compute"]["speculative_main_model"] = main_model
+    current["compute"]["speculative_draft_max"] = draft_max
+    new_settings = type(settings)(**current)
+    new_settings.save_yaml()
+    reload_settings()
+
+    # Apply to llama-swap config
+    try:
+        await asyncio.to_thread(update_speculative_config, enabled, draft_model, draft_max, main_model)
+    except Exception as exc:
+        return JSONResponse({"error": f"Config update failed: {exc}"}, status_code=500)
+
+    # Restart llama-swap service
+    try:
+        r = await asyncio.to_thread(
+            subprocess.run,
+            ["systemctl", "--user", "restart", "llama-swap"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode != 0:
+            return JSONResponse(
+                {"status": "ok", "warning": f"Config saved but service restart failed: {r.stderr[:200]}"},
+                status_code=200,
+            )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        return {"status": "ok", "warning": f"Config saved but service restart skipped: {exc}"}
+
+    return {"status": "ok", "message": "Speculative decoding config applied and llama-swap restarted"}
+
+
 # ── Music control endpoints ──────────────────────────────────────────────────
 
 async def _music_call(request: Request, tool_name: str, arguments: dict | None = None) -> str | None:

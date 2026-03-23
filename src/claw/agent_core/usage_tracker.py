@@ -58,7 +58,8 @@ class UsageTracker:
         except (json.JSONDecodeError, OSError):
             log.warning("Failed to load usage data")
 
-    async def record(self, prompt_tokens: int, completion_tokens: int, total_tokens: int, provider: str = "local") -> None:
+    async def record(self, prompt_tokens: int, completion_tokens: int, total_tokens: int,
+                     provider: str = "local", tier: str = "standard") -> None:
         """Record token usage from a single LLM call."""
         async with self._lock:
             today = date.today().isoformat()
@@ -72,6 +73,9 @@ class UsageTracker:
             self._session["by_provider"][provider]["prompt"] += prompt_tokens
             self._session["by_provider"][provider]["completion"] += completion_tokens
             self._session["by_provider"][provider]["calls"] += 1
+            self._session.setdefault("by_tier", {}).setdefault(tier, {"calls": 0, "tokens": 0})
+            self._session["by_tier"][tier]["calls"] += 1
+            self._session["by_tier"][tier]["tokens"] += total_tokens
 
             # Daily stats
             if today not in self._daily:
@@ -85,6 +89,9 @@ class UsageTracker:
             day["by_provider"][provider]["prompt"] += prompt_tokens
             day["by_provider"][provider]["completion"] += completion_tokens
             day["by_provider"][provider]["calls"] += 1
+            day.setdefault("by_tier", {}).setdefault(tier, {"calls": 0, "tokens": 0})
+            day["by_tier"][tier]["calls"] += 1
+            day["by_tier"][tier]["tokens"] += total_tokens
 
             # Total stats
             self._total["prompt_tokens"] += prompt_tokens
@@ -95,6 +102,9 @@ class UsageTracker:
             self._total["by_provider"][provider]["prompt"] += prompt_tokens
             self._total["by_provider"][provider]["completion"] += completion_tokens
             self._total["by_provider"][provider]["calls"] += 1
+            self._total.setdefault("by_tier", {}).setdefault(tier, {"calls": 0, "tokens": 0})
+            self._total["by_tier"][tier]["calls"] += 1
+            self._total["by_tier"][tier]["tokens"] += total_tokens
 
             self._dirty = True
 

@@ -313,6 +313,45 @@
             </button>
         </div>
 
+        {# ── Speculative Decoding ─────────────────────────────────────── #}
+        <div style="margin-top:1rem; border-top:1px solid var(--pico-muted-border-color); padding-top:1rem;">
+            <div style="display:flex; align-items:center; gap:0.75rem; margin-bottom:0.5rem;">
+                <label for="compute.speculative" style="margin:0; font-weight:600;">Speculative Decoding</label>
+                <input type="checkbox" name="compute.speculative" id="compute.speculative"
+                       {% if settings.compute.speculative %}checked{% endif %}
+                       role="switch">
+            </div>
+            <span class="field-desc">Use a small draft model to accelerate generation. Drafts tokens cheaply, then verifies in bulk.</span>
+
+            <div id="speculative-options" style="display:{{ 'block' if settings.compute.speculative else 'none' }}; margin-top:0.75rem;">
+                <div class="settings-grid">
+                    <div>
+                        <label for="compute.speculative_main_model">Main Model</label>
+                        <select name="compute.speculative_main_model" id="compute.speculative_main_model">
+                            <option value="{{ settings.compute.speculative_main_model }}">{{ settings.compute.speculative_main_model | replace('/home/amd370/models/', '') or 'Loading...' }}</option>
+                        </select>
+                        <span class="field-desc">Primary model for inference (the big, smart one).</span>
+                    </div>
+                    <div>
+                        <label for="compute.speculative_model">Draft Model</label>
+                        <select name="compute.speculative_model" id="compute.speculative_model">
+                            <option value="{{ settings.compute.speculative_model }}">{{ settings.compute.speculative_model | replace('/home/amd370/models/', '') or 'Loading...' }}</option>
+                        </select>
+                        <span class="field-desc">Small, fast model that drafts tokens for the main model to verify.</span>
+                    </div>
+                    <div>
+                        <label for="compute.speculative_draft_max">Draft Max Tokens</label>
+                        <input type="number" name="compute.speculative_draft_max" id="compute.speculative_draft_max"
+                               value="{{ settings.compute.speculative_draft_max }}" min="1" max="64">
+                        <span class="field-desc">Max tokens drafted per step. Higher = more throughput if acceptance is good.</span>
+                    </div>
+                </div>
+                <button type="button" id="speculative-apply-btn" class="link-account-btn" style="margin-top:0.75rem;">
+                    Apply &amp; Restart
+                </button>
+            </div>
+        </div>
+
         {# Progress bar — hidden until build starts #}
         <div id="compute-progress" style="display:none; margin-top:1rem;">
             <div style="display:flex; justify-content:space-between; margin-bottom:0.3rem;">
@@ -334,13 +373,46 @@
             <h3>AI Model</h3>
             <span class="hot-reload-badge">hot-reload</span>
         </div>
+
+        {# ── Model Routing Tiers ── #}
+        <div style="margin-bottom:1rem; padding:0.75rem; border-radius:6px; border:1px solid var(--pico-muted-border-color);">
+            <strong style="font-size:0.9rem;">Model Routing</strong>
+            <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:0.5rem; margin-top:0.5rem; text-align:center;">
+                <div style="padding:0.5rem; border-radius:4px; border:1px solid #22c55e; background:rgba(34,197,94,0.08);">
+                    <div style="font-weight:600; font-size:0.85rem;">Tier 1: Fast</div>
+                    <div id="tier1-label" style="font-size:0.78rem; opacity:0.8;">{{ settings.llm.fast_model or 'Disabled' }}</div>
+                    <div style="font-size:0.72rem; opacity:0.5;">Simple chat</div>
+                </div>
+                <div style="padding:0.5rem; border-radius:4px; border:1px solid var(--pico-primary); background:rgba(99,102,241,0.08);">
+                    <div style="font-weight:600; font-size:0.85rem;">Tier 2: Standard</div>
+                    <div id="tier2-label" style="font-size:0.78rem; opacity:0.8;">{{ settings.llm.model }}</div>
+                    <div style="font-size:0.72rem; opacity:0.5;">Tools &amp; reasoning</div>
+                </div>
+                <div style="padding:0.5rem; border-radius:4px; border:1px solid #ef4444; background:rgba(239,68,68,0.08);">
+                    <div style="font-weight:600; font-size:0.85rem;">Tier 3: Cloud</div>
+                    <div id="tier3-label" style="font-size:0.78rem; opacity:0.8;">{{ settings.cloud_llm.escalation_provider if settings.cloud_llm.escalation_provider != 'auto' else 'Auto' }}</div>
+                    <div style="font-size:0.72rem; opacity:0.5;">Hardest tasks</div>
+                </div>
+            </div>
+        </div>
+
         <div class="settings-grid">
             <div>
-                <label for="llm.model">Model</label>
+                <label for="llm.model">Standard Model (Tier 2)</label>
                 <select name="llm.model" id="llm.model">
                     <option value="{{ settings.llm.model }}" selected>{{ settings.llm.model }}</option>
                 </select>
-                <span class="field-desc">Which AI model to use.</span>
+                <span class="field-desc">Main model for tool calls and reasoning.</span>
+            </div>
+            <div>
+                <label for="llm.fast_model">Fast Model (Tier 1)</label>
+                <select name="llm.fast_model" id="llm.fast_model">
+                    <option value="">Disabled</option>
+                    {% if settings.llm.fast_model %}
+                    <option value="{{ settings.llm.fast_model }}" selected>{{ settings.llm.fast_model }}</option>
+                    {% endif %}
+                </select>
+                <span class="field-desc">Small model for simple chat. Disabled = always use standard model.</span>
             </div>
             <div>
                 <label for="llm.temperature">Creativity</label>
@@ -432,6 +504,32 @@
                     Fall back to local if cloud fails
                 </label>
                 <span class="field-desc">Automatically use the local model if the cloud provider is unavailable.</span>
+            </div>
+        </div>
+
+        {# ── Escalation (Tier 3) ── #}
+        <div style="margin-top:1rem; padding-top:1rem; border-top:1px solid var(--pico-muted-border-color);">
+            <h4 style="margin-bottom:0.5rem;">Escalation (Tier 3)</h4>
+            <p class="field-desc" style="margin-bottom:0.75rem;">When the local model is unsure, it can escalate to a cloud provider for a better answer.</p>
+            <div class="settings-grid">
+                <div>
+                    <label for="cloud_llm.escalation_mode">Escalation Mode</label>
+                    <select name="cloud_llm.escalation_mode" id="cloud_llm.escalation_mode">
+                        <option value="auto" {% if settings.cloud_llm.escalation_mode == 'auto' %}selected{% endif %}>Auto-escalate</option>
+                        <option value="ask" {% if settings.cloud_llm.escalation_mode == 'ask' %}selected{% endif %}>Ask me first</option>
+                        <option value="off" {% if settings.cloud_llm.escalation_mode == 'off' %}selected{% endif %}>Never escalate</option>
+                    </select>
+                    <span class="field-desc">What to do when the local model says "I don't know".</span>
+                </div>
+                <div>
+                    <label for="cloud_llm.escalation_provider">Escalation Provider</label>
+                    <select name="cloud_llm.escalation_provider" id="cloud_llm.escalation_provider">
+                        <option value="auto" {% if settings.cloud_llm.escalation_provider == 'auto' %}selected{% endif %}>Auto (first available)</option>
+                        <option value="claude" {% if settings.cloud_llm.escalation_provider == 'claude' %}selected{% endif %}>Claude</option>
+                        <option value="gemini" {% if settings.cloud_llm.escalation_provider == 'gemini' %}selected{% endif %}>Gemini</option>
+                    </select>
+                    <span class="field-desc">Which cloud provider to use as the "final boss" for hard questions.</span>
+                </div>
             </div>
         </div>
 
@@ -1485,12 +1583,15 @@ fetch('/api/audio/devices/output')
 /* ── Populate model dropdown ────────────────────────────────────────── */
 
 const currentModel = {{ settings.llm.model | tojson }};
+const currentFastModel = {{ settings.llm.fast_model | tojson }};
 
 fetch('/api/models')
     .then(r => r.json())
     .then(data => {
-        const sel = document.getElementById('llm.model');
         if (!data.models || !data.models.length) return;
+
+        /* Standard model (Tier 2) */
+        const sel = document.getElementById('llm.model');
         sel.innerHTML = '';
         let found = false;
         data.models.forEach(m => {
@@ -1510,8 +1611,37 @@ fetch('/api/models')
             opt.selected = true;
             sel.prepend(opt);
         }
+
+        /* Fast model (Tier 1) */
+        const fastSel = document.getElementById('llm.fast_model');
+        fastSel.innerHTML = '<option value="">Disabled</option>';
+        data.models.forEach(m => {
+            const opt = document.createElement('option');
+            opt.value = m.name;
+            const paramSize = m.parameter_size || '';
+            opt.textContent = m.name + (paramSize ? ' (' + paramSize + ')' : '');
+            if (currentFastModel && m.name === currentFastModel) opt.selected = true;
+            fastSel.appendChild(opt);
+        });
+
+        /* Update tier labels when dropdowns change */
+        sel.addEventListener('change', function() {
+            document.getElementById('tier2-label').textContent = this.value;
+        });
+        fastSel.addEventListener('change', function() {
+            document.getElementById('tier1-label').textContent = this.value || 'Disabled';
+        });
     })
     .catch(() => {});
+
+/* Update Tier 3 label when escalation provider changes */
+const escProvSel = document.getElementById('cloud_llm.escalation_provider');
+if (escProvSel) {
+    escProvSel.addEventListener('change', function() {
+        document.getElementById('tier3-label').textContent =
+            this.value === 'auto' ? 'Auto' : this.value.replace('-', ' ').replace(/\b\w/g, c => c.toUpperCase());
+    });
+}
 
 /* ── Wake word model list (dynamic) ─────────────────────────────────── */
 
@@ -1781,6 +1911,83 @@ document.getElementById('compute-switch-btn').addEventListener('click', function
         showToast('Switch failed: ' + err.message, 'error');
         this.disabled = false;
         this.textContent = 'Switch Backend';
+    });
+});
+
+/* ── Speculative decoding controls ───────────────────────────────────── */
+
+const specToggle = document.getElementById('compute.speculative');
+const specOptions = document.getElementById('speculative-options');
+
+specToggle.addEventListener('change', function() {
+    specOptions.style.display = this.checked ? 'block' : 'none';
+});
+
+/* Populate GGUF model dropdowns */
+const currentMainModel = {{ settings.compute.speculative_main_model | tojson }};
+const currentDraftModel = {{ settings.compute.speculative_model | tojson }};
+
+fetch('/api/compute/gguf-models')
+    .then(r => r.json())
+    .then(data => {
+        if (!data.models || !data.models.length) return;
+
+        const mainSel = document.getElementById('compute.speculative_main_model');
+        const draftSel = document.getElementById('compute.speculative_model');
+        mainSel.innerHTML = '';
+        draftSel.innerHTML = '';
+
+        data.models.forEach(m => {
+            const label = m.name + ' (' + m.size_gb + ' GB)';
+
+            const mainOpt = document.createElement('option');
+            mainOpt.value = m.path;
+            mainOpt.textContent = label;
+            if (m.path === currentMainModel) mainOpt.selected = true;
+            mainSel.appendChild(mainOpt);
+
+            const draftOpt = document.createElement('option');
+            draftOpt.value = m.path;
+            draftOpt.textContent = label;
+            if (m.path === currentDraftModel) draftOpt.selected = true;
+            draftSel.appendChild(draftOpt);
+        });
+    })
+    .catch(() => {});
+
+/* Apply & Restart button */
+document.getElementById('speculative-apply-btn').addEventListener('click', function() {
+    if (!confirm('Apply speculative decoding changes and restart the inference server?')) return;
+
+    const btn = this;
+    btn.disabled = true;
+    btn.textContent = 'Applying...';
+
+    const payload = {
+        speculative: document.getElementById('compute.speculative').checked,
+        speculative_model: document.getElementById('compute.speculative_model').value,
+        speculative_main_model: document.getElementById('compute.speculative_main_model').value,
+        speculative_draft_max: parseInt(document.getElementById('compute.speculative_draft_max').value) || 16,
+    };
+
+    fetch('/api/compute/apply-speculative', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.status === 'ok') {
+            showToast(d.warning || 'Speculative config applied, llama-swap restarting...', d.warning ? 'warning' : 'success');
+            if (!d.warning) setTimeout(() => location.reload(), 2000);
+        } else {
+            showToast('Failed: ' + (d.error || 'unknown error'), 'error');
+        }
+    })
+    .catch(err => showToast('Failed: ' + err.message, 'error'))
+    .finally(() => {
+        btn.disabled = false;
+        btn.textContent = 'Apply & Restart';
     });
 });
 

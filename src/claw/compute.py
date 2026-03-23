@@ -179,21 +179,70 @@ def update_llama_swap_config(backend: str, gpu_layers: int) -> None:
     log.info("Updated llama-swap config: backend=%s, gpu_layers=%s", backend, gpu_layers)
 
 
-def update_speculative_config(enabled: bool, draft_model: str = "", draft_max: int = 16) -> None:
-    """Update llama-swap-config.yaml to add/remove speculative decoding flags.
-
-    When enabled, adds --model-draft, --gpu-layers-draft, and --draft-max
-    to all llama-server commands. When disabled, removes them.
-    """
+def _find_llama_swap_config() -> Path | None:
+    """Locate llama-swap-config.yaml (project root or home deployment)."""
     from claw.config import PROJECT_ROOT
 
     config_path = PROJECT_ROOT / "llama-swap-config.yaml"
-    if not config_path.exists():
-        home_path = Path.home() / "claw" / "llama-swap-config.yaml"
-        if home_path.exists():
-            config_path = home_path
+    if config_path.exists():
+        return config_path
+    home_path = Path.home() / "claw" / "llama-swap-config.yaml"
+    if home_path.exists():
+        return home_path
+    return None
 
-    if not config_path.exists():
+
+def scan_gguf_models() -> list[dict[str, Any]]:
+    """Scan common directories for available GGUF model files."""
+    search_dirs: set[Path] = set()
+    search_dirs.add(Path.home() / "models")
+
+    # Also check directories referenced in llama-swap config
+    config_path = _find_llama_swap_config()
+    if config_path and config_path.exists():
+        content = config_path.read_text()
+        for match in re.finditer(r'--model(?!-)\s+(\S+\.gguf)', content):
+            parent = Path(match.group(1)).parent
+            if parent.exists():
+                search_dirs.add(parent)
+
+    models = []
+    seen: set[str] = set()
+    for dir_path in search_dirs:
+        if not dir_path.exists():
+            continue
+        for gguf in sorted(dir_path.glob("*.gguf")):
+            if gguf.name in seen:
+                continue
+            seen.add(gguf.name)
+            try:
+                size = gguf.stat().st_size
+            except OSError:
+                continue
+            models.append({
+                "name": gguf.stem,
+                "path": str(gguf),
+                "size": size,
+                "size_gb": round(size / 1e9, 2),
+            })
+
+    return sorted(models, key=lambda m: m["size"])
+
+
+def update_speculative_config(
+    enabled: bool,
+    draft_model: str = "",
+    draft_max: int = 16,
+    main_model: str = "",
+) -> None:
+    """Update llama-swap-config.yaml speculative decoding and model paths.
+
+    When enabled, adds --model-draft, --gpu-layers-draft, and --draft-max.
+    If main_model is set, swaps the primary --model GGUF path (first occurrence only).
+    When disabled, removes speculative flags.
+    """
+    config_path = _find_llama_swap_config()
+    if not config_path:
         log.warning("llama-swap-config.yaml not found, skipping speculative config update")
         return
 
@@ -203,6 +252,15 @@ def update_speculative_config(enabled: bool, draft_model: str = "", draft_max: i
     content = re.sub(r'\s*--model-draft\s+\S+', '', content)
     content = re.sub(r'\s*--gpu-layers-draft\s+\d+', '', content)
     content = re.sub(r'\s*--draft-max\s+\d+', '', content)
+
+    # Swap the primary model GGUF if specified (first --model only, not --model-draft)
+    if main_model:
+        content = re.sub(
+            r'(--model(?![-\w])\s+)\S+\.gguf',
+            rf'\g<1>{main_model}',
+            content,
+            count=1,
+        )
 
     if enabled and draft_model:
         def _add_spec_flags(match: re.Match) -> str:
@@ -214,12 +272,21 @@ def update_speculative_config(enabled: bool, draft_model: str = "", draft_max: i
                 + f" --draft-max {draft_max}"
             )
 
-        content = re.sub(
-            r'(llama-server\b[^\n]*\.gguf\b[^\n]*)',
-            _add_spec_flags,
-            content,
-        )
-        log.info("Speculative decoding enabled: draft=%s, draft_max=%d", draft_model, draft_max)
+        if main_model:
+            # Only add speculative flags to the command containing the main model
+            escaped = re.escape(Path(main_model).name)
+            content = re.sub(
+                rf'(llama-server\b[^\n]*{escaped}[^\n]*)',
+                _add_spec_flags,
+                content,
+            )
+        else:
+            content = re.sub(
+                r'(llama-server\b[^\n]*\.gguf\b[^\n]*)',
+                _add_spec_flags,
+                content,
+            )
+        log.info("Speculative decoding enabled: main=%s, draft=%s, max=%d", main_model, draft_model, draft_max)
     else:
         log.info("Speculative decoding disabled")
 
@@ -361,7 +428,8 @@ async def switch_backend(
             spec = settings.compute.speculative
             spec_model = settings.compute.speculative_model
             spec_max = settings.compute.speculative_draft_max
-            await asyncio.to_thread(update_speculative_config, spec, spec_model, spec_max)
+            spec_main = settings.compute.speculative_main_model
+            await asyncio.to_thread(update_speculative_config, spec, spec_model, spec_max, spec_main)
 
             emit("config", 90, "Configuration updated")
         except Exception as exc:
