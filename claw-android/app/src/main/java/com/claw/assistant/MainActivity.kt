@@ -1,9 +1,10 @@
 package com.claw.assistant
 
 import android.Manifest
+import android.app.Activity
+import android.app.role.RoleManager
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.app.Activity
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
@@ -153,6 +154,9 @@ class MainActivity : ComponentActivity() {
 
             // Start SSE notification listener
             NotificationService.start(this)
+
+            // Request default assistant role
+            requestAssistantRole()
         }
 
         setContent {
@@ -451,6 +455,16 @@ class MainActivity : ComponentActivity() {
         }
         if (needed.isNotEmpty()) {
             permissionLauncher.launch(needed.toTypedArray())
+        }
+    }
+
+    private fun requestAssistantRole() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val roleManager = getSystemService(RoleManager::class.java)
+            if (roleManager != null && !roleManager.isRoleHeld(RoleManager.ROLE_ASSISTANT)) {
+                val intent = roleManager.createRequestRoleIntent(RoleManager.ROLE_ASSISTANT)
+                startActivityForResult(intent, 1001)
+            }
         }
     }
 

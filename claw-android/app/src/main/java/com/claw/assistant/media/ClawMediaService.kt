@@ -29,8 +29,7 @@ class ClawMediaService : MediaLibraryService() {
         Log.d(TAG, "ClawMediaService created")
 
         val app = application as ClawApplication
-        val player = app.musicPlayerManager.getPlayer()
-            ?: return  // Player not initialized yet
+        val player = app.musicPlayerManager.getOrCreatePlayer()
 
         mediaSession = MediaLibrarySession.Builder(this, player, LibrarySessionCallback())
             .build()
@@ -49,7 +48,6 @@ class ClawMediaService : MediaLibraryService() {
 
     override fun onDestroy() {
         mediaSession?.run {
-            player.release()
             release()
             mediaSession = null
         }

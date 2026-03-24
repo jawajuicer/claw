@@ -20,6 +20,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
@@ -30,6 +31,7 @@ class WakeWordService : Service() {
 
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var wakeWordJob: Job? = null
+    private var stateMonitorJob: Job? = null
     private var isRunning = false
 
     override fun onCreate() {
@@ -97,7 +99,7 @@ class WakeWordService : Service() {
         // Start wake word detection loop
         if (modelsReady) {
             wakeWordJob = serviceScope.launch {
-                audioStreamManager.audioChunks.collectLatest { chunk ->
+                audioStreamManager.audioChunks.collect { chunk ->
                     // Only process for wake word when in LISTENING state
                     if (audioStreamManager.state.value == AudioStreamState.LISTENING) {
                         val detected = wakeWordEngine.processAudio(chunk)
@@ -131,7 +133,8 @@ class WakeWordService : Service() {
         audioStreamManager.startStreaming()
 
         // Monitor state to update notification when done
-        serviceScope.launch {
+        stateMonitorJob?.cancel()
+        stateMonitorJob = serviceScope.launch {
             audioStreamManager.state.collectLatest { state ->
                 when (state) {
                     AudioStreamState.LISTENING -> {

@@ -37,3 +37,7 @@
 -keep class com.claw.assistant.media.ClawMediaService { *; }
 -keep class com.claw.assistant.service.NotificationService { *; }
 -keep class com.claw.assistant.data.local.MessageQueueWorker { *; }
+-keep class com.claw.assistant.service.ClawVoiceInteractionService { *; }
+-keep class com.claw.assistant.service.ClawVoiceInteractionSessionService { *; }
+-keep class com.claw.assistant.service.ClawVoiceInteractionSession { *; }
+-keep class com.claw.assistant.service.ClawAccessibilityService { *; }

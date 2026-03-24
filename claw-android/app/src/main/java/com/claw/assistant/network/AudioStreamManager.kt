@@ -9,7 +9,7 @@ import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -17,7 +17,6 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -155,10 +154,8 @@ class AudioStreamManager(
     }
 
     fun stopCapture() {
-        scope.launch {
-            captureJob?.cancelAndJoin()
-            captureJob = null
-        }
+        captureJob?.cancel()
+        captureJob = null
         audioRecord?.stop()
         audioRecord?.release()
         audioRecord = null
@@ -197,13 +194,19 @@ class AudioStreamManager(
     private fun playTtsAudio(wavData: ByteArray) {
         scope.launch {
             try {
-                // Skip WAV header (44 bytes) to get raw PCM
+                // Parse WAV header sample rate instead of hardcoding
+                var ttsSampleRate = SAMPLE_RATE
                 val pcmData = if (wavData.size > 44 &&
                     wavData[0] == 'R'.code.toByte() &&
                     wavData[1] == 'I'.code.toByte() &&
                     wavData[2] == 'F'.code.toByte() &&
                     wavData[3] == 'F'.code.toByte()
                 ) {
+                    // Parse sample rate from WAV header (bytes 24-27, little-endian)
+                    ttsSampleRate = (wavData[24].toInt() and 0xFF) or
+                        ((wavData[25].toInt() and 0xFF) shl 8) or
+                        ((wavData[26].toInt() and 0xFF) shl 16) or
+                        ((wavData[27].toInt() and 0xFF) shl 24)
                     wavData.copyOfRange(44, wavData.size)
                 } else {
                     wavData
@@ -212,13 +215,13 @@ class AudioStreamManager(
                 val track = AudioTrack.Builder()
                     .setAudioAttributes(
                         AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
                             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                             .build()
                     )
                     .setAudioFormat(
                         AudioFormat.Builder()
-                            .setSampleRate(SAMPLE_RATE)
+                            .setSampleRate(ttsSampleRate)
                             .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                             .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                             .build()
@@ -231,10 +234,8 @@ class AudioStreamManager(
                 track.play()
 
                 // Wait for playback to finish
-                val durationMs = (pcmData.size.toLong() * 1000) / (SAMPLE_RATE * 2)
-                withContext(Dispatchers.IO) {
-                    Thread.sleep(durationMs + 100)
-                }
+                val durationMs = (pcmData.size.toLong() * 1000) / (ttsSampleRate * 2)
+                delay(durationMs + 100)
 
                 track.stop()
                 track.release()

@@ -58,9 +58,11 @@ import com.claw.assistant.network.MusicInfo
 import com.claw.assistant.ui.theme.ClawAccent
 import com.claw.assistant.ui.theme.ClawTextPrimary
 import com.claw.assistant.ui.theme.ClawTextSecondary
+import com.claw.assistant.ui.theme.ClawTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -100,7 +102,7 @@ class ClawAssistActivity : ComponentActivity() {
             } else {
                 currentState.value = AssistState.ERROR
                 responseText.value = "Claw is not set up yet. Open the app to connect."
-                setContent { AssistOverlay() }
+                setContent { ClawTheme { AssistOverlay() } }
                 scope.launch {
                     delay(3000)
                     finish()
@@ -115,7 +117,7 @@ class ClawAssistActivity : ComponentActivity() {
         ) {
             currentState.value = AssistState.ERROR
             responseText.value = "Microphone permission required. Open the Claw app to grant it."
-            setContent { AssistOverlay() }
+            setContent { ClawTheme { AssistOverlay() } }
             scope.launch {
                 delay(3000)
                 finish()
@@ -132,6 +134,7 @@ class ClawAssistActivity : ComponentActivity() {
             responseCallback = { text, music ->
                 responseText.value = text
                 currentState.value = AssistState.RESPONDING
+                audioStreamManager?.stopPushToTalk()
                 if (music != null) {
                     app.musicPlayerManager.playFromServer(music)
                 }
@@ -150,7 +153,7 @@ class ClawAssistActivity : ComponentActivity() {
             }
         }
 
-        setContent { AssistOverlay() }
+        setContent { ClawTheme { AssistOverlay() } }
 
         // Start voice capture immediately
         startListening()
@@ -346,6 +349,7 @@ class ClawAssistActivity : ComponentActivity() {
 
     override fun onDestroy() {
         autoDismissJob?.cancel()
+        scope.cancel()
         audioStreamManager?.release()
         audioStreamManager = null
         super.onDestroy()
