@@ -305,7 +305,7 @@ class ClaudeRelay:
         result_text = raw
         try:
             data = json.loads(raw)
-            result_text = data.get("result", raw)
+            result_text = data.get("result") or raw
             # Track session ID for continuity
             new_sid = data.get("session_id")
             if new_sid:

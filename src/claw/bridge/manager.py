@@ -296,9 +296,11 @@ class BridgeManager:
 
         # Check if Claude relay is active — relay doesn't use session state,
         # so we can skip the lock to avoid blocking other messages for ~3 min.
+        # INVARIANT: No awaits between this check and the process_utterance
+        # call below, so is_relay cannot go stale before process_utterance
+        # re-checks _claude_relay.active internally (agent.py).
         is_relay = (
-            hasattr(self._agent, '_claude_relay')
-            and self._agent._claude_relay.active
+            self._agent._claude_relay.active
         )
 
         if is_relay:
@@ -359,23 +361,23 @@ class BridgeManager:
                 "response": response[:200],
             })
 
-            # Format response for the platform
+            # Format and send all chunks in order from dispatch.
+            # Sending here (not splitting across dispatch/on_message)
+            # ensures correct ordering: chunk 1 before chunk 2, etc.
             adapter = self._adapters.get(msg.platform)
             if adapter:
                 chunks = format_response(response, adapter.LIMITS)
-                # Return first chunk; send remaining chunks directly
-                if len(chunks) > 1:
-                    for i, chunk in enumerate(chunks[1:]):
-                        try:
-                            await adapter.send_message(
-                                msg.channel_id, chunk, msg.reply_context
-                            )
-                        except Exception:
-                            log.error(
-                                "[%s] Failed to send chunk %d/%d after retries",
-                                msg.platform, i + 2, len(chunks),
-                            )
-                return chunks[0] if chunks else response
+                for i, chunk in enumerate(chunks):
+                    try:
+                        await adapter.send_message(
+                            msg.channel_id, chunk, msg.reply_context
+                        )
+                    except Exception:
+                        log.error(
+                            "[%s] Failed to send chunk %d/%d after retries",
+                            msg.platform, i + 1, len(chunks),
+                        )
+                return None  # all chunks already sent
             return response
 
         return None
