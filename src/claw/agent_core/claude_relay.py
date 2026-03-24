@@ -5,21 +5,27 @@ relaying messages from any interface (voice, Signal, Discord, CLI, etc.)
 via SSH. For voice callers, extracts a spoken summary for TTS.
 For text callers, returns the full response as-is.
 
+Uses SSH ControlMaster for connection pooling (one TCP handshake per
+activation, all subsequent messages multiplex over it) and retries
+transient failures with exponential backoff.
+
 Supports slash commands (/resume, /model, /cost, etc.) that map to
 Claude Code CLI flags, giving a terminal-like experience from any interface.
 
 Architecture:
-    Claw (any interface) → SSH → dev machine → claude --print → response
+    Claw (any interface) → SSH (ControlMaster) → dev machine → claude --print → response
     The dev machine runs Claude Code with full codebase access.
 """
 
 from __future__ import annotations
 
 import asyncio
+import enum
 import json
 import logging
 import re
 import shlex
+from pathlib import Path
 
 from claw.config import get_settings
 
@@ -50,12 +56,26 @@ _EFFORT_LEVELS = {"low", "medium", "high", "max"}
 # Valid model aliases (short names accepted by claude CLI)
 _MODEL_ALIASES = {"sonnet", "opus", "haiku"}
 
+_DEVNULL = asyncio.subprocess.DEVNULL
+
+
+class _ErrorKind(enum.Enum):
+    """Classification for relay errors to decide retry strategy."""
+    TRANSIENT = "transient"   # SSH connection blip — retry with backoff
+    TIMEOUT = "timeout"       # Claude took too long — retry with --continue
+    FATAL = "fatal"           # auth failure, bad config — do not retry
+
 
 class ClaudeRelay:
     """Manages a Claude Code CLI session via SSH to a dev machine.
 
     Supports all Claw interfaces: voice, CLI, Signal, Discord, Telegram.
     Voice callers get a short TTS summary; text callers get the full response.
+
+    Features:
+    - SSH ControlMaster for connection pooling (one handshake per activation)
+    - Retry with exponential backoff on transient failures
+    - Adaptive timeout (longer for first message, shorter for follow-ups)
 
     Slash commands (/resume, /model, /cost, etc.) are intercepted and
     translated to CLI flags or handled internally.
@@ -71,6 +91,8 @@ class ClaudeRelay:
         self._use_continue: bool = False  # use --continue instead of --resume
         self._cumulative_cost: float = 0.0
         self._turn_count: int = 0
+        # SSH ControlMaster state
+        self._control_path: str | None = None
 
     @property
     def available(self) -> bool:
@@ -81,6 +103,43 @@ class ClaudeRelay:
     @property
     def session_id(self) -> str | None:
         return self._session_id
+
+    # ── Activation / deactivation ────────────────────────────────────────
+
+    async def activate(self) -> str:
+        """Activate relay and warm up the SSH ControlMaster connection.
+
+        Returns a status message for the user.
+        """
+        self.active = True
+        ok = await self._ensure_control_master()
+        if ok:
+            return "Connected to Claude Code. Go ahead."
+        return "Connected to Claude Code (SSH warmup failed, first message may be slow)."
+
+    async def async_reset(self) -> None:
+        """End the session, close ControlMaster, and reset all state."""
+        await self._close_control_master()
+        self._reset_state()
+
+    def reset(self) -> None:
+        """Synchronous reset — cleans up socket file, resets state."""
+        if self._control_path:
+            Path(self._control_path).unlink(missing_ok=True)
+            self._control_path = None
+        self._reset_state()
+
+    def _reset_state(self) -> None:
+        if self._session_id:
+            log.info("Claude Code session ended: %s", self._session_id[:12])
+        self._session_id = None
+        self.active = False
+        self.skip_permissions_override = None
+        self._model = None
+        self._effort = None
+        self._use_continue = False
+        self._cumulative_cost = 0.0
+        self._turn_count = 0
 
     # ── Slash command handling ──────────────────────────────────────────
 
@@ -186,6 +245,94 @@ class ClaudeRelay:
         "/compact": _cmd_compact,
     }
 
+    # ── SSH ControlMaster ────────────────────────────────────────────────
+
+    async def _ensure_control_master(self) -> bool:
+        """Establish or verify the SSH ControlMaster connection.
+
+        Returns True if the master is alive and ready, False on failure
+        (caller should fall back to per-message SSH).
+        """
+        cfg = get_settings().claude_relay
+        if cfg.control_persist <= 0:
+            return False  # ControlMaster disabled by config
+
+        control_path = f"/tmp/claw-ssh-{cfg.user}@{cfg.host}"
+
+        # Check if existing socket is alive
+        if self._control_path and Path(self._control_path).exists():
+            try:
+                check = await asyncio.create_subprocess_exec(
+                    "ssh", "-o", f"ControlPath={self._control_path}",
+                    "-O", "check", f"{cfg.user}@{cfg.host}",
+                    stdout=_DEVNULL, stderr=_DEVNULL,
+                )
+                rc = await asyncio.wait_for(check.wait(), timeout=5)
+                if rc == 0:
+                    return True  # master is alive
+            except asyncio.TimeoutError:
+                check.kill()
+                await check.wait()
+            except OSError:
+                pass
+            log.warning("SSH ControlMaster socket stale, re-establishing")
+            Path(self._control_path).unlink(missing_ok=True)
+            self._control_path = None
+
+        # Establish new master connection
+        # -N = no remote command; with ControlPersist the master forks to
+        # background and the foreground -N process exits once ready.
+        cmd = [
+            "sshpass", "-p", cfg.password, "ssh",
+            "-o", "PreferredAuthentications=password",
+            "-o", "PubkeyAuthentication=no",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "ConnectTimeout=10",
+            "-o", "ControlMaster=yes",
+            "-o", f"ControlPath={control_path}",
+            "-o", f"ControlPersist={cfg.control_persist}",
+            "-N",
+            f"{cfg.user}@{cfg.host}",
+        ]
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=_DEVNULL, stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            log.error("SSH ControlMaster establishment timed out")
+            return False
+
+        if proc.returncode != 0:
+            err = stderr.decode(errors="replace").strip()
+            log.error("SSH ControlMaster failed (rc=%d): %s", proc.returncode, err[:200])
+            return False
+
+        self._control_path = control_path
+        log.info("SSH ControlMaster established: %s", control_path)
+        return True
+
+    async def _close_control_master(self) -> None:
+        """Gracefully close the ControlMaster connection."""
+        if not self._control_path:
+            return
+        cfg = get_settings().claude_relay
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ssh", "-o", f"ControlPath={self._control_path}",
+                "-O", "exit", f"{cfg.user}@{cfg.host}",
+                stdout=_DEVNULL, stderr=_DEVNULL,
+            )
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except (asyncio.TimeoutError, OSError):
+            pass  # best-effort
+        Path(self._control_path).unlink(missing_ok=True)
+        self._control_path = None
+        log.info("SSH ControlMaster closed")
+
     # ── SSH + Claude CLI ────────────────────────────────────────────────
 
     @property
@@ -196,16 +343,32 @@ class ClaudeRelay:
         return cfg.skip_permissions
 
     def _build_ssh_command(self, claude_cmd: str) -> list[str]:
-        """Build the SSH command to execute claude on the dev machine."""
+        """Build the SSH command to execute claude on the dev machine.
+
+        Uses ControlMaster multiplexing when available (no sshpass needed),
+        falls back to standalone sshpass connection otherwise.
+        """
         cfg = get_settings().claude_relay
-        ssh_parts = ["sshpass", "-p", cfg.password, "ssh"]
-        ssh_parts.extend([
-            "-o", "PreferredAuthentications=password",
-            "-o", "PubkeyAuthentication=no",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "ConnectTimeout=10",
-            f"{cfg.user}@{cfg.host}",
-        ])
+
+        if self._control_path and Path(self._control_path).exists():
+            # Multiplex over existing ControlMaster — no sshpass/password needed
+            ssh_parts = [
+                "ssh",
+                "-o", f"ControlPath={self._control_path}",
+                "-o", "StrictHostKeyChecking=no",
+                f"{cfg.user}@{cfg.host}",
+            ]
+        else:
+            # Fallback: standalone connection (original behavior)
+            ssh_parts = ["sshpass", "-p", cfg.password, "ssh"]
+            ssh_parts.extend([
+                "-o", "PreferredAuthentications=password",
+                "-o", "PubkeyAuthentication=no",
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "ConnectTimeout=10",
+                f"{cfg.user}@{cfg.host}",
+            ])
+
         remote_cmd = (
             f"export PATH=$HOME/.local/bin:$HOME/.npm-global/bin:$PATH && "
             f"cd {shlex.quote(cfg.project_dir)} && "
@@ -214,19 +377,66 @@ class ClaudeRelay:
         ssh_parts.append(remote_cmd)
         return ssh_parts
 
+    def _build_claude_cmd(
+        self, message: str, voice_mode: bool, use_continue: bool,
+    ) -> str:
+        """Build the claude CLI command string."""
+        parts = ["claude", "--print", "--output-format", "json"]
+
+        if self._effective_skip_permissions:
+            parts.append("--dangerously-skip-permissions")
+        if self._model:
+            parts.extend(["--model", shlex.quote(self._model)])
+        if self._effort:
+            parts.extend(["--effort", shlex.quote(self._effort)])
+
+        # Session continuity
+        if use_continue:
+            parts.append("--continue")
+        elif self._session_id:
+            parts.extend(["--resume", self._session_id])
+
+        wrapped = f"{_VOICE_INSTRUCTION}{message}" if voice_mode else message
+        parts.append(shlex.quote(wrapped))
+        return " ".join(parts)
+
+    # ── Error classification ─────────────────────────────────────────────
+
+    @staticmethod
+    def _classify_error(
+        returncode: int | None, stderr_text: str, timed_out: bool,
+    ) -> _ErrorKind:
+        """Classify a relay error to decide retry strategy."""
+        if timed_out:
+            return _ErrorKind.TIMEOUT
+        if returncode == 255:
+            # SSH connection-level failure (network, host unreachable, etc.)
+            return _ErrorKind.TRANSIENT
+        lower = stderr_text.lower()
+        if "permission denied" in lower or "authentication failed" in lower:
+            return _ErrorKind.FATAL
+        if "connection refused" in lower or "connection reset" in lower:
+            return _ErrorKind.TRANSIENT
+        if "no such file" in lower and "control" in lower:
+            return _ErrorKind.TRANSIENT  # stale control socket
+        return _ErrorKind.FATAL
+
+    # ── Send (with retry) ────────────────────────────────────────────────
+
     async def send(
         self,
         message: str,
-        timeout: float = 180,
+        timeout: float | None = None,
         voice_mode: bool = False,
     ) -> tuple[str, str | None]:
         """Send a message to Claude Code on the dev machine via SSH.
 
         Slash commands are intercepted and handled before reaching Claude.
+        Transient failures are retried with exponential backoff.
 
         Args:
             message: The user's message (transcribed speech or typed text).
-            timeout: Max seconds to wait for Claude Code (default 3 min).
+            timeout: Max seconds to wait (None = auto based on session state).
             voice_mode: If True, request a voice summary for TTS.
 
         Returns:
@@ -243,64 +453,101 @@ class ClaudeRelay:
             err = "Claude Code relay is not configured. Set claude_relay settings in config.yaml."
             return (err, err if voice_mode else None)
 
-        # Build the claude command with all current settings
-        claude_parts = ["claude", "--print", "--output-format", "json"]
+        cfg = get_settings().claude_relay
 
-        if self._effective_skip_permissions:
-            claude_parts.append("--dangerously-skip-permissions")
-        if self._model:
-            claude_parts.extend(["--model", self._model])
-        if self._effort:
-            claude_parts.extend(["--effort", self._effort])
+        # Adaptive timeout: longer for first message, shorter for follow-ups
+        if timeout is None:
+            timeout = cfg.timeout_initial if not self._session_id else cfg.timeout
 
-        # Session continuity: --continue (most recent) or --resume <id>
-        if self._use_continue:
-            claude_parts.append("--continue")
-            self._use_continue = False  # only for the next call
-        elif self._session_id:
-            claude_parts.extend(["--resume", self._session_id])
+        max_attempts = 1 + cfg.max_retries
 
-        # Voice mode: prepend instruction for spoken summary
-        if voice_mode:
-            wrapped = f"{_VOICE_INSTRUCTION}{message}"
-        else:
-            wrapped = message
+        for attempt in range(max_attempts):
+            # Ensure ControlMaster is alive (no-op if disabled or already alive)
+            await self._ensure_control_master()
 
-        claude_parts.append(shlex.quote(wrapped))
-        claude_cmd = " ".join(claude_parts)
-        ssh_cmd = self._build_ssh_command(claude_cmd)
-
-        log.info("Relaying to Claude Code: %s", message[:100])
-
-        proc = await asyncio.create_subprocess_exec(
-            *ssh_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout
+            # On retry after timeout, use --continue to pick up partial work
+            use_continue = self._use_continue or (
+                attempt > 0 and self._session_id is not None
             )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            log.warning("Claude Code relay timed out after %.0fs", timeout)
-            err = "Claude Code timed out. Try a simpler request."
-            return (err, err if voice_mode else None)
 
-        if proc.returncode != 0:
-            err = stderr.decode(errors="replace").strip()
-            err_lines = [
-                l for l in err.splitlines()
-                if not l.startswith("Warning:") and "known_hosts" not in l
-            ]
-            err_clean = "\n".join(err_lines).strip() if err_lines else err
-            log.error("Claude Code relay error (rc=%d): %s", proc.returncode, err_clean[:300])
-            short = "There was an error communicating with Claude Code."
-            return (f"Claude Code error: {err_clean}", short if voice_mode else None)
+            claude_cmd = self._build_claude_cmd(message, voice_mode, use_continue)
+            ssh_cmd = self._build_ssh_command(claude_cmd)
 
-        # Parse JSON response
+            if attempt == 0:
+                log.info("Relaying to Claude Code: %s", message[:100])
+            else:
+                log.info(
+                    "Relay retry %d/%d: %s", attempt, cfg.max_retries, message[:80],
+                )
+
+            proc = await asyncio.create_subprocess_exec(
+                *ssh_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+            timed_out = False
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                timed_out = True
+                stdout, stderr = b"", b""
+
+            # ── Success ──
+            if not timed_out and proc.returncode == 0:
+                # Clear _use_continue now that it was consumed
+                self._use_continue = False
+                return self._parse_response(stdout, voice_mode)
+
+            # ── Failure — classify and maybe retry ──
+            stderr_text = stderr.decode(errors="replace").strip()
+            kind = self._classify_error(proc.returncode, stderr_text, timed_out)
+
+            is_last_attempt = attempt >= max_attempts - 1
+
+            if kind == _ErrorKind.FATAL or is_last_attempt:
+                self._use_continue = False
+                if timed_out:
+                    err = f"Claude Code timed out after {timeout:.0f}s."
+                    if is_last_attempt and cfg.max_retries > 0:
+                        err += f" ({cfg.max_retries} retries exhausted)"
+                    return (err, err if voice_mode else None)
+                err_lines = [
+                    ln for ln in stderr_text.splitlines()
+                    if not ln.startswith("Warning:") and "known_hosts" not in ln
+                ]
+                err_clean = "\n".join(err_lines).strip() if err_lines else stderr_text
+                log.error("Claude Code relay error (rc=%d): %s", proc.returncode, err_clean[:300])
+                short = "There was an error communicating with Claude Code."
+                return (f"Claude Code error: {err_clean}", short if voice_mode else None)
+
+            # ── Transient/timeout — retry with backoff ──
+            delay = 2 ** attempt  # 1s, 2s
+            log.warning(
+                "Relay attempt %d/%d failed (%s, rc=%s), retrying in %ds",
+                attempt + 1, max_attempts, kind.value, proc.returncode, delay,
+            )
+
+            # Invalidate stale ControlMaster on transient SSH failure
+            if kind == _ErrorKind.TRANSIENT and self._control_path:
+                Path(self._control_path).unlink(missing_ok=True)
+                self._control_path = None
+
+            await asyncio.sleep(delay)
+
+        # Should not reach here, but just in case
+        self._use_continue = False
+        err = "Claude Code relay failed unexpectedly."
+        return (err, err if voice_mode else None)
+
+    def _parse_response(
+        self, stdout: bytes, voice_mode: bool,
+    ) -> tuple[str, str | None]:
+        """Parse Claude Code JSON response, track session and cost."""
         raw = stdout.decode(errors="replace").strip()
         result_text = raw
         try:
@@ -332,6 +579,8 @@ class ClaudeRelay:
         log.info("Claude Code response: %d chars", len(display))
         return display, summary
 
+    # ── Voice summary extraction ─────────────────────────────────────────
+
     def _extract_summary(self, text: str) -> str:
         """Extract <voice_summary> from response, with fallback heuristic."""
         match = _SUMMARY_RE.search(text)
@@ -359,16 +608,3 @@ class ClaudeRelay:
                 return s
 
         return _FALLBACK_SUMMARY
-
-    def reset(self) -> None:
-        """End the current session and reset state."""
-        if self._session_id:
-            log.info("Claude Code session ended: %s", self._session_id[:12])
-        self._session_id = None
-        self.active = False
-        self.skip_permissions_override = None
-        self._model = None
-        self._effort = None
-        self._use_continue = False
-        self._cumulative_cost = 0.0
-        self._turn_count = 0

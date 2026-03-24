@@ -274,7 +274,7 @@ class Agent:
         self.tts_override = None  # reset each call
         if interactive and self._claude_relay.active:
             if _CLAUDE_MODE_OFF_RE.match(text.strip()):
-                self._claude_relay.reset()
+                await self._claude_relay.async_reset()
                 return "Disconnected from Claude Code. Back to normal mode."
             full_response, summary = await self._claude_relay.send(
                 text, voice_mode=voice_mode,
@@ -512,9 +512,9 @@ class Agent:
             if "--dangerously-skip-permissions" in text_lower:
                 self._claude_relay.skip_permissions_override = True
                 log.info("Claude Code relay: --dangerously-skip-permissions enabled")
-            self._claude_relay.active = True
+            msg = await self._claude_relay.activate()
             log.info("Claude Code relay mode activated")
-            return "Connected to Claude Code. Go ahead."
+            return msg
 
         # "ask gemini/claude/the cloud ..." direct escalation
         cloud_match = re.match(

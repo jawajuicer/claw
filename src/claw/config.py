@@ -483,6 +483,10 @@ class ClaudeRelayConfig(BaseModel):
     password: str = ""          # SSH password
     project_dir: str = ""       # project directory on dev machine
     skip_permissions: bool = False  # pass --dangerously-skip-permissions to claude
+    timeout_initial: float = 300    # seconds for first message (no session yet)
+    timeout: float = 180            # seconds for subsequent messages
+    max_retries: int = 2            # retries on transient failures (0 = disabled)
+    control_persist: int = 300      # SSH ControlPersist seconds (0 = disable)
 
 
 # ── Root settings ───────────────────────────────────────────────────────────
