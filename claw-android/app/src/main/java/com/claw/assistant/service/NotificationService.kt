@@ -41,7 +41,13 @@ class NotificationService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // MUST call startForeground immediately to avoid ForegroundServiceDidNotStartInTimeException
-        startForeground(NOTIFICATION_ID, buildForegroundNotification("Connecting..."))
+        val notification = buildForegroundNotification("Connecting...")
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(NOTIFICATION_ID, notification,
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
 
         when (intent?.action) {
             ACTION_START -> startListening()

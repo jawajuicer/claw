@@ -71,7 +71,9 @@ class ClawApplication : Application() {
     }
 
     override fun onTerminate() {
-        tunnelManager.disconnect()
+        kotlinx.coroutines.runBlocking {
+            try { tunnelManager.disconnect() } catch (_: Exception) {}
+        }
         musicPlayerManager.release()
         apiClient.shutdown()
         super.onTerminate()

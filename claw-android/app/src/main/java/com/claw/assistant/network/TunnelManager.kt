@@ -61,7 +61,7 @@ class TunnelManager(context: Context) {
         }
     }
 
-    fun disconnect() {
+    suspend fun disconnect() = withContext(Dispatchers.IO) {
         try {
             tunnel?.let {
                 backend.setState(it, Tunnel.State.DOWN, null)
@@ -85,9 +85,19 @@ class TunnelManager(context: Context) {
          * all the connection details the app needs.
          */
         fun parseProvisioningCode(code: String): ProvisioningData {
-            val decoded = String(Base64.decode(code.trim(), Base64.URL_SAFE or Base64.NO_WRAP))
-            val json = JSONObject(decoded)
-            val wg = json.getJSONObject("wg")
+            val decoded: String
+            try {
+                decoded = String(Base64.decode(code.trim(), Base64.URL_SAFE or Base64.NO_WRAP))
+            } catch (e: IllegalArgumentException) {
+                throw IllegalArgumentException("Invalid provisioning code format — scan a QR code from the Claw admin panel")
+            }
+            val json = try {
+                JSONObject(decoded)
+            } catch (e: org.json.JSONException) {
+                throw IllegalArgumentException("Invalid provisioning code — not a valid Claw configuration")
+            }
+            val wg = json.optJSONObject("wg")
+                ?: throw IllegalArgumentException("Invalid provisioning code — missing connection data")
             return ProvisioningData(
                 apiKey = json.getString("api_key"),
                 wgPrivateKey = wg.getString("private_key"),

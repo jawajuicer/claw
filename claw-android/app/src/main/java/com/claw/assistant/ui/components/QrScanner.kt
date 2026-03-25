@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,6 +45,7 @@ import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 @Composable
 fun QrScanner(
@@ -59,7 +61,18 @@ fun QrScanner(
                 PackageManager.PERMISSION_GRANTED
         )
     }
-    var scanned by remember { mutableStateOf(false) }
+    // Thread-safe scan guard — accessed from background executor
+    val scanned = remember { AtomicBoolean(false) }
+    val executor = remember { Executors.newSingleThreadExecutor() }
+    val barcodeClient = remember { BarcodeScanning.getClient() }
+
+    // Clean up executor when composable leaves composition
+    DisposableEffect(Unit) {
+        onDispose {
+            executor.shutdown()
+            barcodeClient.close()
+        }
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -96,7 +109,6 @@ fun QrScanner(
             factory = { ctx ->
                 val previewView = PreviewView(ctx)
                 val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
-                val executor = Executors.newSingleThreadExecutor()
 
                 cameraProviderFuture.addListener({
                     val cameraProvider = cameraProviderFuture.get()
@@ -110,9 +122,8 @@ fun QrScanner(
                         .build()
                         .also {
                             it.setAnalyzer(executor) { imageProxy ->
-                                processImage(imageProxy) { value ->
-                                    if (!scanned) {
-                                        scanned = true
+                                processImage(imageProxy, barcodeClient) { value ->
+                                    if (scanned.compareAndSet(false, true)) {
                                         onResult(value)
                                     }
                                 }
@@ -176,13 +187,16 @@ fun QrScanner(
 }
 
 @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
-private fun processImage(imageProxy: ImageProxy, onQrDetected: (String) -> Unit) {
+private fun processImage(
+    imageProxy: ImageProxy,
+    client: com.google.mlkit.vision.barcode.BarcodeScanner,
+    onQrDetected: (String) -> Unit
+) {
     val mediaImage = imageProxy.image
     if (mediaImage != null) {
         val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
-        val scanner = BarcodeScanning.getClient()
 
-        scanner.process(image)
+        client.process(image)
             .addOnSuccessListener { barcodes ->
                 for (barcode in barcodes) {
                     if (barcode.valueType == Barcode.TYPE_TEXT) {

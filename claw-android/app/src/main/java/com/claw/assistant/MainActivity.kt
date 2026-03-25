@@ -131,6 +131,9 @@ class MainActivity : ComponentActivity() {
                         if (vpnIntent == null) {
                             app.tunnelManager.connect(savedWgConfig)
                             Log.d(TAG, "Auto-reconnected WireGuard tunnel")
+                        } else {
+                            Log.w(TAG, "VPN permission revoked — tunnel not reconnected, requesting permission")
+                            vpnPermissionLauncher.launch(vpnIntent)
                         }
                     } catch (e: Exception) {
                         Log.w(TAG, "Auto-reconnect failed", e)
@@ -310,8 +313,9 @@ class MainActivity : ComponentActivity() {
             if (vpnIntent != null) {
                 val granted = kotlinx.coroutines.suspendCancellableCoroutine { cont ->
                     onVpnPermissionResult = { result ->
-                        cont.resumeWith(Result.success(result))
+                        if (cont.isActive) cont.resumeWith(Result.success(result))
                     }
+                    cont.invokeOnCancellation { onVpnPermissionResult = null }
                     vpnPermissionLauncher.launch(vpnIntent)
                 }
                 if (!granted) {
@@ -381,7 +385,9 @@ class MainActivity : ComponentActivity() {
         audioStreamManager?.release()
         audioStreamManager = null
         app.musicPlayerManager.stop()
-        app.tunnelManager.disconnect()
+        kotlinx.coroutines.MainScope().launch {
+            try { app.tunnelManager.disconnect() } catch (_: Exception) {}
+        }
         app.preferencesManager.clearCredentials()
         Log.d(TAG, "Disconnected from server")
     }

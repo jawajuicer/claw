@@ -93,6 +93,8 @@ class ClaudeRelay:
         self._turn_count: int = 0
         # SSH ControlMaster state
         self._control_path: str | None = None
+        # Serialize send() calls to prevent state corruption
+        self._send_lock = asyncio.Lock()
 
     @property
     def available(self) -> bool:
@@ -120,13 +122,6 @@ class ClaudeRelay:
     async def async_reset(self) -> None:
         """End the session, close ControlMaster, and reset all state."""
         await self._close_control_master()
-        self._reset_state()
-
-    def reset(self) -> None:
-        """Synchronous reset — cleans up socket file, resets state."""
-        if self._control_path:
-            Path(self._control_path).unlink(missing_ok=True)
-            self._control_path = None
         self._reset_state()
 
     def _reset_state(self) -> None:
@@ -415,8 +410,13 @@ class ClaudeRelay:
         lower = stderr_text.lower()
         if "permission denied" in lower or "authentication failed" in lower:
             return _ErrorKind.FATAL
-        if "connection refused" in lower or "connection reset" in lower:
-            return _ErrorKind.TRANSIENT
+        for pattern in (
+            "connection refused", "connection reset", "connection timed out",
+            "network is unreachable", "broken pipe",
+            "rate limit", "overloaded", "503",
+        ):
+            if pattern in lower:
+                return _ErrorKind.TRANSIENT
         if "no such file" in lower and "control" in lower:
             return _ErrorKind.TRANSIENT  # stale control socket
         return _ErrorKind.FATAL
@@ -453,6 +453,16 @@ class ClaudeRelay:
             err = "Claude Code relay is not configured. Set claude_relay settings in config.yaml."
             return (err, err if voice_mode else None)
 
+        async with self._send_lock:
+            return await self._send_locked(message, timeout, voice_mode)
+
+    async def _send_locked(
+        self,
+        message: str,
+        timeout: float | None,
+        voice_mode: bool,
+    ) -> tuple[str, str | None]:
+        """Inner send implementation, called under _send_lock."""
         cfg = get_settings().claude_relay
 
         # Adaptive timeout: longer for first message, shorter for follow-ups
@@ -466,11 +476,12 @@ class ClaudeRelay:
             await self._ensure_control_master()
 
             # On retry after timeout, use --continue to pick up partial work
-            use_continue = self._use_continue or (
-                attempt > 0 and self._session_id is not None
-            )
+            # and omit the message to avoid re-processing
+            is_timeout_retry = attempt > 0 and self._session_id is not None
+            use_continue = self._use_continue or is_timeout_retry
+            retry_msg = "" if is_timeout_retry else message
 
-            claude_cmd = self._build_claude_cmd(message, voice_mode, use_continue)
+            claude_cmd = self._build_claude_cmd(retry_msg, voice_mode, use_continue)
             ssh_cmd = self._build_ssh_command(claude_cmd)
 
             if attempt == 0:
