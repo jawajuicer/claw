@@ -48,7 +48,17 @@
             </div>
         </div>
 
+        <div id="image-preview" class="image-preview" style="display:none;">
+            <img id="image-preview-img" src="" alt="Preview">
+            <button onclick="clearPendingImage()" aria-label="Remove image" class="image-preview-remove">&times;</button>
+        </div>
         <div class="chat-input-bar">
+            <input type="file" id="image-input" accept="image/*" style="display:none" onchange="onImageSelected(this)">
+            <button onclick="document.getElementById('image-input').click()" aria-label="Attach image" class="attach-btn">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>
+                </svg>
+            </button>
             <textarea id="chat-input" placeholder="Type a message..." rows="1"
                       onkeydown="handleKey(event)" autofocus></textarea>
             <button id="send-btn" onclick="sendMessage()" aria-label="Send">
@@ -77,6 +87,28 @@ const contextWindow = {{ context_window }};
 const ttsEnabled = {{ 'true' if tts_enabled else 'false' }};
 const ttsAutoplay = {{ 'true' if tts_autoplay else 'false' }};
 let currentAudio = null;
+let pendingImageB64 = null;
+
+function onImageSelected(input) {
+    const file = input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        const dataUrl = e.target.result;
+        // Strip the data:image/...;base64, prefix for the API
+        pendingImageB64 = dataUrl.split(',')[1];
+        document.getElementById('image-preview-img').src = dataUrl;
+        document.getElementById('image-preview').style.display = 'flex';
+    };
+    reader.readAsDataURL(file);
+    input.value = '';  // reset so same file can be re-selected
+}
+
+function clearPendingImage() {
+    pendingImageB64 = null;
+    document.getElementById('image-preview').style.display = 'none';
+    document.getElementById('image-preview-img').src = '';
+}
 
 function handleKey(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -356,18 +388,24 @@ function finalizeStreamingBubble(content, toolsUsed, usage) {
 async function sendMessage() {
     if (processing) return;
     const text = inputEl.value.trim();
-    if (!text) return;
+    const hasImage = !!pendingImageB64;
+    if (!text && !hasImage) return;
 
     inputEl.value = '';
     inputEl.style.height = 'auto';
-    appendMessage('user', text);
-    chatMessages.push({role: 'user', content: text});
+    const displayText = (hasImage && text) ? text + ' [image attached]' : (hasImage ? '[Image sent]' : text);
+    appendMessage('user', displayText);
+    chatMessages.push({role: 'user', content: displayText});
     updateSaveButton();
     setProcessing(true);
 
     const chatBody = {message: text};
     const selectedModel = modelSelect.value;
     if (selectedModel) chatBody.model = selectedModel;
+    if (pendingImageB64) {
+        chatBody.image = pendingImageB64;
+    }
+    clearPendingImage();
 
     let streamOk = false;
 

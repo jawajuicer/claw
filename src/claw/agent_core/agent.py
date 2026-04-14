@@ -245,6 +245,7 @@ class Agent:
         memory_scope: str | None = None,
         interactive: bool = False,
         voice_mode: bool = False,
+        images: list[tuple[bytes, str]] | None = None,
     ) -> str:
         """Process a user utterance through the agent loop.
 
@@ -328,10 +329,11 @@ class Agent:
 
         self._last_interaction = t0
         # Inject context (platform info, memory refresh) before user message
-        if context:
-            self._session.add_user(f"{context}\n\n{text}")
+        combined = f"{context}\n\n{text}" if context else text
+        if images:
+            self._session.add_user_multimodal(combined, images)
         else:
-            self._session.add_user(text)
+            self._session.add_user(combined)
         self._session.trim_to_fit()
 
         # Auto-compact if context is getting large
@@ -365,7 +367,7 @@ class Agent:
 
         # Tier routing: fast model for simple queries, standard for everything else
         effective_model = model
-        if not effective_model and self._should_use_fast_model(text, bool(tools)):
+        if not effective_model and self._should_use_fast_model(text, bool(tools), bool(images)):
             effective_model = cfg.fast_model
             stats.tier = "fast"
             log.info("Tier 1 (fast model '%s') for simple query", effective_model)
@@ -645,12 +647,14 @@ class Agent:
         re.I,
     )
 
-    def _should_use_fast_model(self, text: str, has_tools: bool) -> bool:
+    def _should_use_fast_model(self, text: str, has_tools: bool, has_images: bool = False) -> bool:
         """Determine if Tier 1 (fast model) is appropriate for this query."""
         cfg = get_settings().llm
         if not cfg.fast_model:
             return False
         if has_tools:
+            return False
+        if has_images:
             return False
         # Long messages likely need deeper reasoning
         if len(text.split()) > 20:
@@ -838,6 +842,7 @@ class Agent:
         tools: list[dict] | None = None,
         model: str | None = None,
         context: str | None = None,
+        images: list[tuple[bytes, str]] | None = None,
     ):
         """Async generator yielding streaming events as dicts.
 
@@ -893,10 +898,11 @@ class Agent:
                 self._session.initialize(memory_context=memory_ctx)
 
             self._last_interaction = t0
-            if context:
-                self._session.add_user(f"{context}\n\n{text}")
+            combined = f"{context}\n\n{text}" if context else text
+            if images:
+                self._session.add_user_multimodal(combined, images)
             else:
-                self._session.add_user(text)
+                self._session.add_user(combined)
             self._session.trim_to_fit()
 
             # Auto-compact if context is getting large
@@ -939,7 +945,7 @@ class Agent:
 
             # Tier routing: fast model for simple queries, standard for everything else
             effective_model = model
-            if not effective_model and self._should_use_fast_model(text, bool(tools)):
+            if not effective_model and self._should_use_fast_model(text, bool(tools), bool(images)):
                 effective_model = cfg.fast_model
                 stats.tier = "fast"
                 log.info("Tier 1 (fast model '%s') for simple streaming query", effective_model)

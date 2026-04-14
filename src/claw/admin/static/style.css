@@ -559,6 +559,36 @@ footer {
 .chat-input-bar button:hover { opacity: 0.85; }
 .chat-input-bar button:disabled { opacity: 0.4; cursor: not-allowed; }
 
+.attach-btn {
+    background: transparent !important;
+    color: var(--claw-text-muted, #888);
+    border: none;
+}
+.attach-btn:hover { color: var(--claw-accent) !important; opacity: 1 !important; }
+
+.image-preview {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0;
+}
+.image-preview img {
+    max-height: 80px;
+    max-width: 120px;
+    border-radius: 8px;
+    object-fit: cover;
+    border: 1px solid #333;
+}
+.image-preview-remove {
+    background: transparent;
+    border: none;
+    color: var(--claw-text-muted, #888);
+    font-size: 1.2rem;
+    cursor: pointer;
+    padding: 0.2rem 0.5rem;
+}
+.image-preview-remove:hover { color: #e74c3c; }
+
 /* ── Settings Page ─────────────────────────────────────────────────── */
 
 .settings-card {

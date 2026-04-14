@@ -224,7 +224,20 @@ async def api_chat(request: Request):
     body = await request.json()
     message = body.get("message", "").strip()
     model = body.get("model")  # optional per-chat model override
-    if not message:
+    image_b64 = body.get("image")  # optional base64-encoded image
+
+    # Prepare image for LLM if provided
+    images = None
+    if image_b64:
+        import base64 as b64mod
+        from claw.agent_core.image_utils import prepare_images_for_llm
+        try:
+            raw = b64mod.b64decode(image_b64)
+        except Exception:
+            return JSONResponse({"error": "Invalid base64 image data"}, status_code=400)
+        images = prepare_images_for_llm([raw]) or None
+
+    if not message and not images:
         return JSONResponse({"error": "Empty message"}, status_code=400)
 
     agent = request.app.state.agent
@@ -252,7 +265,9 @@ async def api_chat(request: Request):
 
         tools = registry.get_openai_tools() if registry else None
         try:
-            response = await agent.process_utterance(message, tools=tools or None, model=model or None)
+            response = await agent.process_utterance(
+                message, tools=tools or None, model=model or None, images=images,
+            )
             tools_used = _extract_tools_from_new_messages(agent, msg_count_before)
             await broadcaster.update_response(response)
         except Exception:
@@ -279,7 +294,19 @@ async def api_chat_stream(request: Request):
     body = await request.json()
     message = body.get("message", "").strip()
     model = body.get("model")
-    if not message:
+    image_b64 = body.get("image")
+
+    images = None
+    if image_b64:
+        import base64 as b64mod
+        from claw.agent_core.image_utils import prepare_images_for_llm
+        try:
+            raw = b64mod.b64decode(image_b64)
+        except Exception:
+            return JSONResponse({"error": "Invalid base64 image data"}, status_code=400)
+        images = prepare_images_for_llm([raw]) or None
+
+    if not message and not images:
         return JSONResponse({"error": "Empty message"}, status_code=400)
 
     agent = request.app.state.agent
@@ -318,6 +345,7 @@ async def api_chat_stream(request: Request):
             try:
                 async for event in agent.process_utterance_stream(
                     message, tools=tools or None, model=model or None,
+                    images=images,
                 ):
                     yield json.dumps(event)
 
@@ -486,8 +514,9 @@ async def api_search_conversations(q: str = ""):
             # Search in title and message content
             title = data.get("title", "")
             messages = data.get("messages", [])
+            from claw.agent_core.conversation import _extract_text
             text_blob = title.lower() + " " + " ".join(
-                (m.get("content") or "").lower() for m in messages
+                _extract_text(m.get("content", "")).lower() for m in messages
             )
             if query in text_blob:
                 results.append({
@@ -555,7 +584,8 @@ async def api_save_conversation(request: Request):
     title = "Untitled"
     for msg in messages:
         if msg.get("role") == "user" and msg.get("content"):
-            title = msg["content"][:50]
+            from claw.agent_core.conversation import _extract_text
+            title = (_extract_text(msg["content"]) or "Image conversation")[:50]
             break
 
     d = _conversations_dir()

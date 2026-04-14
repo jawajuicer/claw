@@ -139,6 +139,29 @@ class SignalAdapter(BridgeAdapter):
                 pass
             self._http_client = None
 
+    async def _download_image_attachments(self, data_msg: dict) -> list[bytes]:
+        """Download image attachments from signal-cli REST API."""
+        attachments = data_msg.get("attachments", [])
+        images = []
+        for att in attachments:
+            content_type = att.get("contentType", "")
+            if not content_type.startswith("image/"):
+                continue
+            att_id = att.get("id") or att.get("filename")
+            if not att_id:
+                log.warning("[signal] Attachment missing id/filename: %s", att)
+                continue
+            try:
+                client = await self._ensure_http_client()
+                resp = await client.get(f"/v1/attachments/{att_id}")
+                if resp.status_code == 200:
+                    images.append(resp.content)
+                else:
+                    log.warning("[signal] Attachment %s returned %d", att_id, resp.status_code)
+            except Exception:
+                log.warning("[signal] Failed to download attachment %s", att_id, exc_info=True)
+        return images
+
     def _extract_sender_name(self, envelope: dict) -> str:
         """Extract a human-readable sender name from an envelope.
 
@@ -458,7 +481,8 @@ class SignalAdapter(BridgeAdapter):
             return
 
         text = data_msg.get("message", "")
-        if not text:
+        images = await self._download_image_attachments(data_msg)
+        if not text and not images:
             return
 
         group_info = self._extract_group_info(data_msg)
@@ -490,6 +514,7 @@ class SignalAdapter(BridgeAdapter):
                     "is_group": True,
                     "timestamp": msg_timestamp,
                 },
+                images=images,
             )
 
             if is_mention:
@@ -526,6 +551,7 @@ class SignalAdapter(BridgeAdapter):
                     "is_group": False,
                     "timestamp": msg_timestamp,
                 },
+                images=images,
             )
             await self.on_message(msg)
 

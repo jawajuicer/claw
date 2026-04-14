@@ -90,7 +90,20 @@ async def remote_chat(request: Request):
     """Process a text message through the agent."""
     body = await request.json()
     message = body.get("message", "").strip()
-    if not message:
+    image_b64 = body.get("image")
+
+    # Prepare image for LLM if provided
+    images = None
+    if image_b64:
+        import base64 as b64mod
+        from claw.agent_core.image_utils import prepare_images_for_llm
+        try:
+            raw = b64mod.b64decode(image_b64)
+        except Exception:
+            return JSONResponse({"error": "Invalid base64 image data"}, status_code=400)
+        images = prepare_images_for_llm([raw]) or None
+
+    if not message and not images:
         return JSONResponse({"error": "Empty message"}, status_code=400)
 
     agent = request.app.state.agent
@@ -110,7 +123,9 @@ async def remote_chat(request: Request):
 
         tools = registry.get_openai_tools() if registry else None
         try:
-            response = await agent.process_utterance(message, tools=tools or None, interactive=True)
+            response = await agent.process_utterance(
+                message, tools=tools or None, interactive=True, images=images,
+            )
             tools_used = _extract_tools(agent, msg_count_before)
             await broadcaster.update_response(response)
         except Exception:

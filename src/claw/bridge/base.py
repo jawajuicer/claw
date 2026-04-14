@@ -38,6 +38,7 @@ class InboundMessage:
     is_mention: bool = False  # True if bot was @mentioned in group
     is_admin: bool = True  # True if user can execute tools (default: all users)
     reply_context: dict = field(default_factory=dict)  # platform-specific reply data
+    images: list[bytes] = field(default_factory=list)  # raw image bytes from attachments
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 

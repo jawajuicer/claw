@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import uuid
 from datetime import datetime
@@ -13,6 +14,15 @@ from openai.types.chat import ChatCompletionMessageParam
 from claw.config import get_settings
 
 log = logging.getLogger(__name__)
+
+
+def _extract_text(content) -> str:
+    """Extract plain text from message content (string or multimodal parts list)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(p.get("text", "") for p in content if p.get("type") == "text")
+    return str(content) if content else ""
 
 
 def _build_account_context() -> str:
@@ -81,6 +91,19 @@ class ConversationSession:
     def add_user(self, content: str) -> None:
         self.messages.append({"role": "user", "content": content})
 
+    def add_user_multimodal(self, text: str, images: list[tuple[bytes, str]]) -> None:
+        """Add a user message with text and images (OpenAI multimodal format)."""
+        content: list[dict] = []
+        if text:
+            content.append({"type": "text", "text": text})
+        for img_bytes, mime in images:
+            b64 = base64.b64encode(img_bytes).decode()
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{b64}"},
+            })
+        self.messages.append({"role": "user", "content": content})
+
     def add_assistant(self, content: str) -> None:
         self.messages.append({"role": "assistant", "content": content})
 
@@ -103,7 +126,7 @@ class ConversationSession:
         lines = []
         for msg in self.messages:
             if msg.get("role") in ("user", "assistant") and msg.get("content"):
-                lines.append(f"{msg['role']}: {msg['content']}")
+                lines.append(f"{msg['role']}: {_extract_text(msg.get('content'))}")
         return "\n".join(lines)
 
     def trim_to_fit(self, max_messages: int = 40) -> None:
@@ -125,7 +148,14 @@ class ConversationSession:
         total = 0
         for m in self.messages:
             content = m.get("content", "") or ""
-            total += len(str(content)) // 4
+            if isinstance(content, list):
+                for part in content:
+                    if part.get("type") == "text":
+                        total += len(part.get("text", "")) // 4
+                    elif part.get("type") == "image_url":
+                        total += 768  # approximate vision token cost per image
+            else:
+                total += len(str(content)) // 4
             for tc in m.get("tool_calls", []):
                 func = tc.get("function", {})
                 total += len(func.get("name", "")) // 4
@@ -176,9 +206,15 @@ class ConversationSession:
         for msg in old_messages:
             role = msg.get("role", "unknown")
             content = msg.get("content", "")
+            text = _extract_text(content)
+            # Note images without including base64 data
+            has_images = isinstance(content, list) and any(
+                p.get("type") == "image_url" for p in content
+            )
+            img_note = " [image attached]" if has_images else ""
             if role == "tool":
                 tool_id = msg.get("tool_call_id", "")
-                formatted_lines.append(f"Tool result ({tool_id}): {content}")
+                formatted_lines.append(f"Tool result ({tool_id}): {text}")
             elif role == "assistant" and msg.get("tool_calls"):
                 # Assistant message requesting tool calls
                 calls = msg.get("tool_calls", [])
@@ -190,10 +226,10 @@ class ConversationSession:
                     else:
                         call_strs.append(str(tc))
                 formatted_lines.append(f"Assistant [tool calls]: {', '.join(call_strs)}")
-                if content:
-                    formatted_lines.append(f"Assistant: {content}")
+                if text:
+                    formatted_lines.append(f"Assistant: {text}")
             else:
-                formatted_lines.append(f"{role.capitalize()}: {content}")
+                formatted_lines.append(f"{role.capitalize()}: {text}{img_note}")
 
         conversation_text = "\n".join(formatted_lines)
 

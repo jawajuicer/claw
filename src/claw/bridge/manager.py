@@ -294,6 +294,14 @@ class BridgeManager:
         else:
             agent_text = msg.text
 
+        # Prepare images for LLM if present (offload CPU-bound resize to thread)
+        processed_images = None
+        if msg.images:
+            from claw.agent_core.image_utils import prepare_images_for_llm
+            processed_images = await asyncio.to_thread(prepare_images_for_llm, msg.images)
+            if not processed_images:
+                processed_images = None
+
         # Check if Claude relay is active — relay doesn't use session state,
         # so we can skip the lock to avoid blocking other messages for ~3 min.
         # INVARIANT: No awaits between this check and the process_utterance
@@ -311,6 +319,7 @@ class BridgeManager:
                     _skip_session_memory=True,
                     memory_scope=memory_scope,
                     interactive=True,
+                    images=processed_images,
                 )
                 log.info(
                     "[%s] Relay processing (no lock): %.1fms",
@@ -332,6 +341,7 @@ class BridgeManager:
                         _skip_session_memory=True,
                         memory_scope=memory_scope,
                         interactive=True,
+                        images=processed_images,
                     )
                     log.info(
                         "[%s] Agent processing: %.1fms",

@@ -17,7 +17,7 @@ if [[ -z "${CLAW_DEPLOY_PASSWORD:-}" ]]; then
 fi
 
 REMOTE_USER="amd370"
-REMOTE_HOST="10.7.8.245"
+REMOTE_HOST="10.8.33.245"
 REMOTE_DIR="~/claw"
 HEALTH_URL="http://${REMOTE_HOST}:8080/api/health"
 HEALTH_TIMEOUT=30
@@ -45,6 +45,7 @@ RSYNC_EXCLUDES=(
     --exclude='.env'
     --exclude='.claude'
     --exclude='config.yaml'
+    --exclude='llama-swap-config.yaml'
     --exclude='claw-android/'
 )
 

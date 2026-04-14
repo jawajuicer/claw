@@ -145,6 +145,18 @@ class DiscordAdapter(BridgeAdapter):
                 text = text.replace(f"<@{client.user.id}>", "").strip()
                 text = text.replace(f"<@!{client.user.id}>", "").strip()
 
+            # Extract image attachments
+            images: list[bytes] = []
+            for att in message.attachments:
+                if att.content_type and att.content_type.startswith("image/") and att.size <= 10_000_000:
+                    try:
+                        images.append(await att.read())
+                    except Exception:
+                        log.warning("[discord] Failed to download attachment %s", att.filename)
+
+            if not text and not images:
+                return
+
             msg = InboundMessage(
                 platform=adapter.PLATFORM,
                 user_id=str(message.author.id),
@@ -157,6 +169,7 @@ class DiscordAdapter(BridgeAdapter):
                     "message_id": message.id,
                     "channel_id": message.channel.id,
                 },
+                images=images,
             )
             await adapter.on_message(msg)
 

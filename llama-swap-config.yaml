@@ -1,0 +1,19 @@
+# llama-swap config for Claw
+# See: https://github.com/mostlygeek/llama-swap
+#
+# NOTE: Model paths are absolute — adjust if deploying to a different machine.
+#       Remote deployment (amd370@10.8.33.245) has its own copy at ~/claw/llama-swap-config.yaml.
+
+logLevel: "info"
+logToStdout: "proxy"
+
+# Auto-unload after 5 minutes of inactivity to free VRAM
+globalTTL: 300
+
+models:
+  gemma-4-E4B:
+    cmd: "llama-server --port ${PORT} --model /home/chuck/models/gemma-4-E4B/gemma-4-E4B-it-UD-Q4_K_XL.gguf --mmproj /home/chuck/models/gemma-4-E4B/mmproj-BF16.gguf --ctx-size 32768 --batch-size 512 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --n-gpu-layers 99"
+    ttl: 300
+    aliases:
+      - "gemma4"
+      - "gemma-4"
