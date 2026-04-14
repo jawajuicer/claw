@@ -925,9 +925,10 @@ async def api_health(request: Request):
     # ChromaDB — check via the agent's retriever → store
     try:
         agent = request.app.state.agent
-        store = getattr(getattr(agent, "retriever", None), "_store", None)
-        if store and getattr(store, "_initialized", False):
-            checks["chromadb"] = {"status": "ok"}
+        store = getattr(getattr(agent, "retriever", None), "store", None)
+        if store and store.conversations is not None:
+            stats = store.stats()
+            checks["chromadb"] = {"status": "ok", "facts": stats.get("facts", 0)}
         else:
             checks["chromadb"] = {"status": "warning", "detail": "Store not initialized"}
     except Exception as exc:

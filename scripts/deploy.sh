@@ -20,7 +20,7 @@ REMOTE_USER="amd370"
 REMOTE_HOST="10.8.33.245"
 REMOTE_DIR="~/claw"
 HEALTH_URL="http://${REMOTE_HOST}:8080/api/health"
-HEALTH_TIMEOUT=30
+HEALTH_TIMEOUT=60
 
 SSH_OPTS="-o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no"
 SSH_CMD="sshpass -p '${CLAW_DEPLOY_PASSWORD}' ssh ${SSH_OPTS} ${REMOTE_USER}@${REMOTE_HOST}"
