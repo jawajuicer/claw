@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 _PUBLIC_PREFIXES = (
     "/static/", "/auth/google/", "/app", "/api/remote/app/",
     "/api/webhook", "/api/bridge/", "/api/remote/pair/claim",
+    "/api/health",
 )
 
 
