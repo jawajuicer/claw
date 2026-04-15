@@ -54,7 +54,18 @@ class MemoryRetriever:
 
         context = "--- Memory Context ---\n" + "\n\n".join(sections) + "\n--- End Memory ---"
         if len(context) > max_chars:
-            context = context[:max_chars].rsplit("\n", 1)[0] + "\n--- End Memory ---"
+            truncated = context[:max_chars]
+            # Prefer sentence boundary, fall back to space, then newline
+            for sep in (". ", ".\n"):
+                idx = truncated.rfind(sep)
+                if idx > max_chars * 0.5:
+                    truncated = truncated[:idx + 1]
+                    break
+            else:
+                idx = truncated.rfind(" ")
+                if idx > max_chars * 0.5:
+                    truncated = truncated[:idx]
+            context = truncated.rstrip() + "\n--- End Memory ---"
         return context
 
     def store_conversation_turn(

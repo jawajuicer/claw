@@ -44,7 +44,7 @@ CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 
 # Gemini vision config
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyDW5Jn-go8mJqigxoAbrOtpX87Xi2EHkws")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # gemini-2.0-flash: free tier 15 RPM / 1500 req/day (vs 2.5-flash: 20/day)
 GEMINI_MODEL = "gemini-2.0-flash"
 # Pages with fewer chars than this AND images will be sent to Gemini vision
@@ -56,9 +56,19 @@ MAX_RETRIES = 3
 
 def init_gemini():
     """Initialize Gemini client for vision analysis."""
+    api_key = GEMINI_API_KEY
+    if not api_key:
+        try:
+            from claw.secret_store import load as secret_load
+            api_key = secret_load("gemini_api_key") or ""
+        except Exception:
+            pass
+    if not api_key:
+        log.warning("No Gemini API key found (set GEMINI_API_KEY env var or store in secret store)")
+        return None
     try:
         from google import genai
-        client = genai.Client(api_key=GEMINI_API_KEY)
+        client = genai.Client(api_key=api_key)
         log.info("Gemini vision initialized (model: %s)", GEMINI_MODEL)
         return client
     except Exception as e:
@@ -104,8 +114,6 @@ def describe_page_image(client, pdf_path: Path, page_num: int, pdf_title: str) -
             except Exception as api_err:
                 err_str = str(api_err)
                 if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                    # Extract retry delay from error if available
-                    import json
                     wait = GEMINI_DELAY * (2 ** attempt)
                     try:
                         if "retryDelay" in err_str:

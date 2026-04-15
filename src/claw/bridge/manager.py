@@ -223,11 +223,9 @@ class BridgeManager:
 
         # Admin-only context: group members + memory retrieval in parallel
         if msg.is_admin:
-            # Only fetch memory for new sessions — ongoing conversations
-            # already have full context in message history.  Injecting stale
-            # ChromaDB results on every turn confuses small models by mixing
-            # unrelated past events/emails into the current conversation.
-            is_new_session = not user_session.messages
+            # Memory is fetched on every message using conversation-aware queries
+            # (last 4 user messages + current) so follow-up questions like
+            # "tell me about it" resolve to the actual topic being discussed.
 
             async def _fetch_group_members() -> str | None:
                 if msg.is_direct:
@@ -246,10 +244,20 @@ class BridgeManager:
 
             async def _fetch_memory() -> str | None:
                 try:
+                    # Build search query from recent conversation + current message
+                    # so pronouns like "tell me about it" resolve to actual topics
+                    from claw.agent_core.conversation import _extract_text
+
+                    recent_texts = [_extract_text(m["content"])
+                                    for m in user_session.messages[-4:]
+                                    if m.get("role") == "user" and m.get("content")]
+                    recent_texts.append(msg.text)
+                    search_query = " ".join(recent_texts)[-500:]
+
                     return await asyncio.wait_for(
                         asyncio.to_thread(
                             self._agent.retriever.retrieve_context,
-                            msg.text, 8, 1200, memory_scope,
+                            search_query, 8, 1200, memory_scope,
                         ),
                         timeout=3.0,
                     )
@@ -260,18 +268,14 @@ class BridgeManager:
                     )
                 return None
 
-            # Run context assembly — memory only on first message in session
+            # Run context assembly — fetch memory on new sessions or knowledge queries
             t_ctx = time.monotonic()
-            if is_new_session:
-                group_ctx, memory_ctx = await asyncio.gather(
-                    _fetch_group_members(), _fetch_memory(),
-                )
-            else:
-                group_ctx = await _fetch_group_members()
-                memory_ctx = None
+            group_ctx, memory_ctx = await asyncio.gather(
+                _fetch_group_members(), _fetch_memory(),
+            )
             log.info(
-                "[%s] Context assembly: %.1fms (new_session=%s)",
-                msg.platform, (time.monotonic() - t_ctx) * 1000, is_new_session,
+                "[%s] Context assembly: %.1fms",
+                msg.platform, (time.monotonic() - t_ctx) * 1000,
             )
             if group_ctx:
                 context_parts.append(group_ctx)
