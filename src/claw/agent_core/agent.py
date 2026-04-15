@@ -425,11 +425,10 @@ class Agent:
             if not message.tool_calls:
                 content = self._clean_response(message.content or "")
                 # If cleaning stripped everything (model only emitted hallucinated
-                # tool calls), nudge it to answer directly and retry.
+                # tool calls), retry WITHOUT tools so the model can't hallucinate them.
                 if not content and iteration < max_iterations - 1:
-                    log.warning("Empty response after cleaning hallucinated markup, retrying")
-                    self._session.add_assistant("")
-                    self._session.add_user("Please answer the question directly.")
+                    log.warning("Empty response after cleaning hallucinated markup, retrying without tools")
+                    tools = None
                     continue
                 content = await self._maybe_escalate(text, content, stats, t0)
                 self._session.add_assistant(content)
@@ -1053,11 +1052,10 @@ class Agent:
                 if not pending_tool_calls:
                     # Content-only response — we're done
                     full_content = self._clean_response(full_content)
-                    # If cleaning stripped everything, nudge and retry
+                    # If cleaning stripped everything, retry WITHOUT tools
                     if not full_content and iteration < max_iterations - 1:
-                        log.warning("Empty stream response after cleaning hallucinated markup, retrying")
-                        self._session.add_assistant("")
-                        self._session.add_user("Please answer the question directly.")
+                        log.warning("Empty stream response after cleaning hallucinated markup, retrying without tools")
+                        tools = None
                         continue
                     full_content = await self._maybe_escalate(
                         text, full_content, stats, t0
