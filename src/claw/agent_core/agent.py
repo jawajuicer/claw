@@ -425,11 +425,20 @@ class Agent:
             if not message.tool_calls:
                 content = self._clean_response(message.content or "")
                 # If cleaning stripped everything (model only emitted hallucinated
-                # tool calls), retry WITHOUT tools so the model can't hallucinate them.
-                if not content and iteration < max_iterations - 1:
-                    log.warning("Empty response after cleaning hallucinated markup, retrying without tools")
-                    tools = None
-                    continue
+                # tool calls), retry once without tools. If still empty, bail out
+                # with a fallback rather than burning all iterations.
+                if not content:
+                    if not getattr(self, "_hallucination_retried", False):
+                        self._hallucination_retried = True
+                        log.warning("Empty response after cleaning hallucinated markup, retrying without tools")
+                        tools = None
+                        continue
+                    else:
+                        log.warning("Model keeps hallucinating tool calls, returning fallback")
+                        self._hallucination_retried = False
+                        content = "I'm sorry, I wasn't able to answer that. Could you try rephrasing?"
+                else:
+                    self._hallucination_retried = False
                 content = await self._maybe_escalate(text, content, stats, t0)
                 self._session.add_assistant(content)
                 self.retriever.store_conversation_turn("assistant", content, self._session.session_id, scope=memory_scope)
@@ -1052,11 +1061,19 @@ class Agent:
                 if not pending_tool_calls:
                     # Content-only response — we're done
                     full_content = self._clean_response(full_content)
-                    # If cleaning stripped everything, retry WITHOUT tools
-                    if not full_content and iteration < max_iterations - 1:
-                        log.warning("Empty stream response after cleaning hallucinated markup, retrying without tools")
-                        tools = None
-                        continue
+                    # If cleaning stripped everything, retry once without tools
+                    if not full_content:
+                        if not getattr(self, "_hallucination_retried", False):
+                            self._hallucination_retried = True
+                            log.warning("Empty stream response after cleaning hallucinated markup, retrying without tools")
+                            tools = None
+                            continue
+                        else:
+                            log.warning("Model keeps hallucinating tool calls (stream), returning fallback")
+                            self._hallucination_retried = False
+                            full_content = "I'm sorry, I wasn't able to answer that. Could you try rephrasing?"
+                    else:
+                        self._hallucination_retried = False
                     full_content = await self._maybe_escalate(
                         text, full_content, stats, t0
                     )
