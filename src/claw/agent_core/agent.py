@@ -134,6 +134,15 @@ _NO_TOOL_PATTERNS: list[re.Pattern] = [
     re.compile(r"\b(?:meaning\s+of\s+life|how\s+old|where\s+(?:am|are|is))\b", re.I),
 ]
 
+# Strip hallucinated tool-call markup that small local models sometimes emit
+# in their text output instead of using proper function calling.
+# Covers: <|tool_call>...<tool_call|>, <tool_call>...</tool_call>,
+#          <|tool_call|>..., and similar variants.
+_HALLUCINATED_TOOL_CALL_RE = re.compile(
+    r"<\|?tool_call\|?>.*?<\|?/?tool_call\|?>",
+    re.DOTALL,
+)
+
 # No-arg music controls — compiled once at module level.
 _SIMPLE_MUSIC_CONTROLS: list[tuple[re.Pattern, str]] = [
     # Pause: "pause", "pause the music", "pause it"
@@ -225,6 +234,12 @@ class Agent:
         # Claude Code voice relay
         self._claude_relay = ClaudeRelay()
         self.tts_override: str | None = None  # voice summary for TTS (caller reads this)
+
+    @staticmethod
+    def _clean_response(content: str) -> str:
+        """Strip hallucinated tool-call markup from LLM text output."""
+        cleaned = _HALLUCINATED_TOOL_CALL_RE.sub("", content).strip()
+        return cleaned
 
     @property
     def session(self) -> ConversationSession | None:
@@ -408,7 +423,7 @@ class Agent:
 
             # If no tool calls, we have a final response
             if not message.tool_calls:
-                content = message.content or ""
+                content = self._clean_response(message.content or "")
                 content = await self._maybe_escalate(text, content, stats, t0)
                 self._session.add_assistant(content)
                 self.retriever.store_conversation_turn("assistant", content, self._session.session_id, scope=memory_scope)
@@ -456,7 +471,7 @@ class Agent:
         response = await self.llm.chat(messages=self._session.get_messages(), model=effective_model)
         stats.accumulate(response)
         stats.provider = self.llm.last_serving_provider
-        content = response.choices[0].message.content or "I wasn't able to complete that request."
+        content = self._clean_response(response.choices[0].message.content or "I wasn't able to complete that request.")
         self._session.add_assistant(content)
         self.retriever.store_conversation_turn("assistant", content, self._session.session_id, scope=memory_scope)
         stats.elapsed_s = time.monotonic() - t0
@@ -1030,6 +1045,7 @@ class Agent:
 
                 if not pending_tool_calls:
                     # Content-only response — we're done
+                    full_content = self._clean_response(full_content)
                     full_content = await self._maybe_escalate(
                         text, full_content, stats, t0
                     )
@@ -1131,7 +1147,7 @@ class Agent:
             )
             stats.accumulate(response)
             stats.provider = self.llm.last_serving_provider
-            content = (
+            content = self._clean_response(
                 response.choices[0].message.content
                 or "I wasn't able to complete that request."
             )
