@@ -134,14 +134,17 @@ _NO_TOOL_PATTERNS: list[re.Pattern] = [
     re.compile(r"\b(?:meaning\s+of\s+life|how\s+old|where\s+(?:am|are|is))\b", re.I),
 ]
 
-# Strip hallucinated tool-call markup that small local models sometimes emit
-# in their text output instead of using proper function calling.
-# Covers: <|tool_call>...<tool_call|>, <tool_call>...</tool_call>,
-#          <|tool_call|>..., and similar variants.
-_HALLUCINATED_TOOL_CALL_RE = re.compile(
-    r"<\|?tool_call\|?>.*?<\|?/?tool_call\|?>",
-    re.DOTALL,
-)
+# Strip model control tokens that leak into text output.
+# Covers: hallucinated tool calls, thinking/channel markers, etc.
+_MODEL_JUNK_PATTERNS: list[re.Pattern] = [
+    # Hallucinated tool calls: <|tool_call>...<tool_call|> and variants
+    re.compile(r"<\|?tool_call\|?>.*?<\|?/?tool_call\|?>", re.DOTALL),
+    # Gemma thinking markers: <|channel>thought<channel|>...<|channel>response<channel|>
+    # Strip everything up to and including the response marker (keep only the response)
+    re.compile(r"<\|channel>thought<channel\|>.*?<\|channel>response<channel\|>", re.DOTALL),
+    # Stray channel markers without a response section (strip thinking entirely)
+    re.compile(r"<\|channel>thought<channel\|>.*", re.DOTALL),
+]
 
 # No-arg music controls — compiled once at module level.
 _SIMPLE_MUSIC_CONTROLS: list[tuple[re.Pattern, str]] = [
@@ -237,9 +240,11 @@ class Agent:
 
     @staticmethod
     def _clean_response(content: str) -> str:
-        """Strip hallucinated tool-call markup from LLM text output."""
-        cleaned = _HALLUCINATED_TOOL_CALL_RE.sub("", content).strip()
-        return cleaned
+        """Strip model control tokens (tool calls, thinking markers) from text."""
+        cleaned = content
+        for pattern in _MODEL_JUNK_PATTERNS:
+            cleaned = pattern.sub("", cleaned)
+        return cleaned.strip()
 
     @property
     def session(self) -> ConversationSession | None:
