@@ -424,6 +424,13 @@ class Agent:
             # If no tool calls, we have a final response
             if not message.tool_calls:
                 content = self._clean_response(message.content or "")
+                # If cleaning stripped everything (model only emitted hallucinated
+                # tool calls), nudge it to answer directly and retry.
+                if not content and iteration < max_iterations - 1:
+                    log.warning("Empty response after cleaning hallucinated markup, retrying")
+                    self._session.add_assistant("")
+                    self._session.add_user("Please answer the question directly.")
+                    continue
                 content = await self._maybe_escalate(text, content, stats, t0)
                 self._session.add_assistant(content)
                 self.retriever.store_conversation_turn("assistant", content, self._session.session_id, scope=memory_scope)
@@ -1046,6 +1053,12 @@ class Agent:
                 if not pending_tool_calls:
                     # Content-only response — we're done
                     full_content = self._clean_response(full_content)
+                    # If cleaning stripped everything, nudge and retry
+                    if not full_content and iteration < max_iterations - 1:
+                        log.warning("Empty stream response after cleaning hallucinated markup, retrying")
+                        self._session.add_assistant("")
+                        self._session.add_user("Please answer the question directly.")
+                        continue
                     full_content = await self._maybe_escalate(
                         text, full_content, stats, t0
                     )
