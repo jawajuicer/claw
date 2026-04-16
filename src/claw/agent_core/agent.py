@@ -139,11 +139,12 @@ _NO_TOOL_PATTERNS: list[re.Pattern] = [
 _MODEL_JUNK_PATTERNS: list[re.Pattern] = [
     # Hallucinated tool calls: <|tool_call>...<tool_call|> and variants
     re.compile(r"<\|?tool_call\|?>.*?<\|?/?tool_call\|?>", re.DOTALL),
-    # Gemma thinking markers: <|channel>thought<channel|>...<|channel>response<channel|>
-    # Strip everything up to and including the response marker (keep only the response)
-    re.compile(r"<\|channel>thought<channel\|>.*?<\|channel>response<channel\|>", re.DOTALL),
-    # Stray channel markers without a response section (strip thinking entirely)
-    re.compile(r"<\|channel>thought<channel\|>.*", re.DOTALL),
+    # Gemma thinking block: <|channel>thought<channel|>...THINKING...<channel|>RESPONSE
+    # Strip from opening marker up through the closing <channel|>, leaving the response.
+    re.compile(r"<\|channel>thought<channel\|>.*?<channel\|>", re.DOTALL),
+    # Any other stray channel control tokens
+    re.compile(r"<\|channel>"),
+    re.compile(r"<channel\|>"),
 ]
 
 # No-arg music controls — compiled once at module level.
