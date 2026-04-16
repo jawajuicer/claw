@@ -136,12 +136,21 @@ _NO_TOOL_PATTERNS: list[re.Pattern] = [
 
 # Strip model control tokens that leak into text output.
 # Covers: hallucinated tool calls, thinking/channel markers, etc.
+#
+# Pattern order matters:
+# 1. Tool-call hallucinations (independent format)
+# 2. Complete thinking block: opener + thinking + closer (keeps response after)
+# 3. Unclosed thinking block fallback: opener + everything to end (truncated output)
+# 4. Stray markers (belt-and-suspenders for edge cases)
 _MODEL_JUNK_PATTERNS: list[re.Pattern] = [
     # Hallucinated tool calls: <|tool_call>...<tool_call|> and variants
     re.compile(r"<\|?tool_call\|?>.*?<\|?/?tool_call\|?>", re.DOTALL),
-    # Gemma thinking block: <|channel>thought<channel|>...THINKING...<channel|>RESPONSE
-    # Strip from opening marker up through the closing <channel|>, leaving the response.
+    # Gemma complete thinking block: <|channel>thought<channel|>...<channel|>RESPONSE
+    # Non-greedy — strips only up to the closing marker, leaves response intact.
     re.compile(r"<\|channel>thought<channel\|>.*?<channel\|>", re.DOTALL),
+    # Truncated thinking (no closing marker): strip everything from opener to end.
+    # Without this, truncated responses leak "thought" + raw CoT to the user.
+    re.compile(r"<\|channel>thought<channel\|>.*", re.DOTALL),
     # Any other stray channel control tokens
     re.compile(r"<\|channel>"),
     re.compile(r"<channel\|>"),
@@ -393,6 +402,9 @@ class Agent:
             stats.tier = "fast"
             log.info("Tier 1 (fast model '%s') for simple query", effective_model)
 
+        # Local flag — scoped to this call so state can't bleed across users/sessions
+        hallucination_retried = False
+
         for iteration in range(max_iterations):
             log.info("Agent iteration %d/%d", iteration + 1, max_iterations)
 
@@ -431,20 +443,16 @@ class Agent:
             if not message.tool_calls:
                 content = self._clean_response(message.content or "")
                 # If cleaning stripped everything (model only emitted hallucinated
-                # tool calls), retry once without tools. If still empty, bail out
-                # with a fallback rather than burning all iterations.
+                # tool calls / thinking), retry once without tools. If still empty,
+                # bail out with a fallback rather than burning all iterations.
                 if not content:
-                    if not getattr(self, "_hallucination_retried", False):
-                        self._hallucination_retried = True
-                        log.warning("Empty response after cleaning hallucinated markup, retrying without tools")
+                    log.warning("Empty response after cleaning (raw: %s)", repr((message.content or "")[:300]))
+                    if not hallucination_retried:
+                        hallucination_retried = True
                         tools = None
                         continue
-                    else:
-                        log.warning("Model keeps hallucinating tool calls, returning fallback")
-                        self._hallucination_retried = False
-                        content = "I'm sorry, I wasn't able to answer that. Could you try rephrasing?"
-                else:
-                    self._hallucination_retried = False
+                    log.warning("Model keeps producing empty content, returning fallback")
+                    content = "I'm sorry, I wasn't able to answer that. Could you try rephrasing?"
                 content = await self._maybe_escalate(text, content, stats, t0)
                 self._session.add_assistant(content)
                 self.retriever.store_conversation_turn("assistant", content, self._session.session_id, scope=memory_scope)
@@ -986,6 +994,9 @@ class Agent:
                 stats.tier = "fast"
                 log.info("Tier 1 (fast model '%s') for simple streaming query", effective_model)
 
+            # Local flag — scoped to this call so state can't bleed across users/sessions
+            hallucination_retried = False
+
             # ── Streaming agent loop ───────────────────────────────────
             for iteration in range(max_iterations):
                 log.info("Agent stream iteration %d/%d", iteration + 1, max_iterations)
@@ -1069,17 +1080,13 @@ class Agent:
                     full_content = self._clean_response(full_content)
                     # If cleaning stripped everything, retry once without tools
                     if not full_content:
-                        if not getattr(self, "_hallucination_retried", False):
-                            self._hallucination_retried = True
-                            log.warning("Empty stream response after cleaning hallucinated markup, retrying without tools")
+                        log.warning("Empty stream response after cleaning (raw: %s)", repr("".join(content_parts)[:300]))
+                        if not hallucination_retried:
+                            hallucination_retried = True
                             tools = None
                             continue
-                        else:
-                            log.warning("Model keeps hallucinating tool calls (stream), returning fallback")
-                            self._hallucination_retried = False
-                            full_content = "I'm sorry, I wasn't able to answer that. Could you try rephrasing?"
-                    else:
-                        self._hallucination_retried = False
+                        log.warning("Model keeps producing empty content (stream), returning fallback")
+                        full_content = "I'm sorry, I wasn't able to answer that. Could you try rephrasing?"
                     full_content = await self._maybe_escalate(
                         text, full_content, stats, t0
                     )
