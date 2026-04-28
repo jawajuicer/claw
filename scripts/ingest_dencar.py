@@ -29,7 +29,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
 
 DEFAULT_SOURCE = Path.home() / "Documents/Projects/website_crawlscrape/output_inhouse/www.dencartechnology.com"
-SCOPE = "dencar"
+SCOPE = "shared"
 MIN_CONTENT_LENGTH = 50  # skip files with less meaningful content
 CHUNK_SIZE = 800  # characters per chunk (~200 tokens for sentence-transformers)
 CHUNK_OVERLAP = 100  # overlap between chunks for context continuity

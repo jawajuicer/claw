@@ -348,7 +348,7 @@ class Agent:
                     memory_ctx = await asyncio.wait_for(
                         asyncio.to_thread(
                             self.retriever.retrieve_context, text,
-                            None, 600, memory_scope,
+                            None, 2000, memory_scope,
                         ),
                         timeout=3.0,
                     )
@@ -358,6 +358,23 @@ class Agent:
             self._session.initialize(memory_context=memory_ctx)
 
         self._last_interaction = t0
+        # Per-turn memory refresh: session-init retrieval used the first utterance
+        # only, so mid-conversation topic shifts (e.g. "tell me about Dencar")
+        # never surface relevant facts. Bridge already injects per-turn memory.
+        if not _skip_session_memory and len(self._session.messages) > 1:
+            try:
+                turn_memory_ctx = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self.retriever.retrieve_context, text,
+                        None, 2000, memory_scope,
+                    ),
+                    timeout=3.0,
+                )
+            except asyncio.TimeoutError:
+                log.warning("Per-turn memory retrieval timed out")
+                turn_memory_ctx = ""
+            if turn_memory_ctx:
+                context = f"{turn_memory_ctx}\n\n{context}" if context else turn_memory_ctx
         # Inject context (platform info, memory refresh) before user message
         combined = f"{context}\n\n{text}" if context else text
         if images:
@@ -933,7 +950,10 @@ class Agent:
                     self._session = ConversationSession()
                 try:
                     memory_ctx = await asyncio.wait_for(
-                        asyncio.to_thread(self.retriever.retrieve_context, text),
+                        asyncio.to_thread(
+                            self.retriever.retrieve_context, text,
+                            None, 2000, self._memory_scope,
+                        ),
                         timeout=3.0,
                     )
                 except asyncio.TimeoutError:
@@ -942,6 +962,22 @@ class Agent:
                 self._session.initialize(memory_context=memory_ctx)
 
             self._last_interaction = t0
+            # Per-turn memory refresh (see process_utterance for rationale).
+            # Streaming has no _skip_session_memory param; first-turn check is enough.
+            if len(self._session.messages) > 1:
+                try:
+                    turn_memory_ctx = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self.retriever.retrieve_context, text,
+                            None, 2000, self._memory_scope,
+                        ),
+                        timeout=3.0,
+                    )
+                except asyncio.TimeoutError:
+                    log.warning("Per-turn memory retrieval timed out")
+                    turn_memory_ctx = ""
+                if turn_memory_ctx:
+                    context = f"{turn_memory_ctx}\n\n{context}" if context else turn_memory_ctx
             combined = f"{context}\n\n{text}" if context else text
             if images:
                 self._session.add_user_multimodal(combined, images)
